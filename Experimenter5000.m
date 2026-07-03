@@ -1,27 +1,35 @@
-stim_dur = 10;
-pre_stim = 2;
-itp = 3;
-flickerHz = 60;
-for ind = 1:5
-    
-    pause(1)
-    %TRigger kry to start Clampex acquisition
-    NET.addAssembly('System.Windows.Forms');
-    if ind == 1
-        System.Windows.Forms.SendKeys.SendWait('%{TAB}');
-    end
-    pause(0.01);
-    System.Windows.Forms.SendKeys.SendWait('^+{1}');
-    
-    pause(pre_stim); %prestim window
-  
-  AAGreyScaleFullFieldNoiseFinal2026();
-%   AASConeIsoFullFieldNoiseStimFinal2026();
-%   AASeededGaussianCheckerboardSConeIsoStimFinal();
-%   AASeededGaussianCheckerboardGreyScaleStimFinal();
+%% ===== Experimenter5000 — session entry point =====
+% Define the protocol below, then run this file. It builds a protocol and hands it to
+% runExperiment.m, which pre-flights the Stage server, triggers Clampex once per epoch
+% (triggerAcquisition.m), presents each stimulus, and lets each stimulus append its row
+% to the day's stim manifest (YYYY_MM_DD_stim_manifest.jsonl, paired to the .abf files
+% by trial order). This replaces the old hand-rolled trial loop and Experimenter5000_v2.
 
-    pause(stim_dur+1);
-    pause(itp)
-    sprintf('Trial %d done!',ind)
-end
-sprintf('Experiment done!')
+%% ----- parameters -----
+refreshRate = 60;
+flickerHz   = 4;
+stim_dur    = 10;                          % seconds per epoch
+stimFrames  = stim_dur * refreshRate;
+nTrials     = 5;                           % epochs per block
+
+%% ----- protocol: one column per block  {stimulus, args, #epochs, label} -----
+% Flicker args        = (flickerHz, stimFrames, refreshRate).
+% Gaussian-noise args = (seed, mu, sigma, flickerHz, stimFrames, refreshRate); [] = default.
+protocol = struct( ...
+    'stim',   {@AAGreyScaleFullFieldNoiseFinal2026}, ...
+    'args',   {{flickerHz, stimFrames, refreshRate}}, ...
+    'epochs', {nTrials}, ...
+    'label',  {'greyscale full-field flicker'});
+
+% --- Run several stimuli in one session by adding columns, e.g.: ---
+% protocol = struct( ...
+%     'stim',   {@AAGreyScaleFullFieldNoiseFinal2026,        @AASeededGaussianSConeIsoStimFinal2026}, ...
+%     'args',   {{flickerHz, stimFrames, refreshRate},       {[], [], [], flickerHz, stimFrames, refreshRate}}, ...
+%     'epochs', {nTrials,                                    nTrials}, ...
+%     'label',  {'greyscale flicker',                        's-cone-iso noise'});
+
+%% ----- timing (see runExperiment.m for all opts) -----
+opts = struct('preStim', 2, 'postStim', 1, 'itp', 3);
+
+%% ----- run -----
+runExperiment(protocol, opts);
