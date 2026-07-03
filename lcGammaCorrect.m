@@ -43,10 +43,11 @@ function c = lcGammaCorrect(L)
 %   The projector applies the same transfer function to each of R, G and B
 %   in Video mode, so this correction is applied independently per channel.
 %
-%   SINGLE SOURCE OF TRUTH: to retune the display gamma, edit GAMMA below;
-%   every stimulus script picks up the change automatically.
+%   SINGLE SOURCE OF TRUTH: gamma is read from rig_config.json (via loadRigConfig);
+%   re-derive it from measurements with calibrateGamma.m. Falls back to 2.2056 if the
+%   config is absent. loadRigConfig caches, so this stays fast in the per-frame loops.
 
-    GAMMA = 2.2056;   % LightCrafter 4500 Video-mode display gamma (measured)
+    GAMMA = loadRigConfig('gamma', 2.2056);   % rig_config.json -> single source of truth
 
     L = min(max(L, 0), 1);      % clamp to the valid linear range
     c = L .^ (1 / GAMMA);
