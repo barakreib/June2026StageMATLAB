@@ -13,9 +13,13 @@ function outPath = writeStimManifest(outDir, record)
 %   `record` is a struct of metadata: seed, mu, sigma, checks_x, checks_y,
 %   n_updates, update_every_n_frames, refresh_rate_hz, stim_frames, gamma,
 %   stim_type ('gaussian_noise' | 'checkerboard' | 'sq_wave' | 'jitter'),
-%   cone_isolation ('S' | 'achromatic'), stimulus (function name), etc. Two fields are
-%   added automatically:
+%   cone_isolation ('S' | 'achromatic'), stimulus (function name), etc. Three fields
+%   are added automatically:
 %     - `timestamp`      : local ISO-8601 time of the presentation.
+%     - `rig`            : the rig hardware/calibration state from rig_config.json
+%                          (projector, projector_mode, gamma, channel_to_led, ...), so
+%                          each recording is self-describing for the importer. Stamped
+%                          AFTER the signature, so it does not affect stimulus identity.
 %     - `stim_signature` : a hash of the record's DEFINING params. Repeated IDENTICAL
 %                          stimuli (e.g. Experimenter5000_v2 running the same 2 Hz square
 %                          wave 3x) get the SAME stim_signature, so the importer groups
@@ -30,9 +34,12 @@ function outPath = writeStimManifest(outDir, record)
 
     if nargin < 1 || isempty(outDir), outDir = pwd; end
 
-    % Signature FIRST, from the pure defining params (before timestamp/signature exist),
-    % so repeated identical stimuli hash identically.
+    % Signature FIRST, from the pure defining params (before signature/rig/timestamp
+    % exist) so repeated identical stimuli hash identically regardless of rig or time.
     record.stim_signature = local_signature(record);
+    % Then stamp the rig hardware/calibration state so every row is self-describing.
+    % Deliberately AFTER the signature: the stimulus identity is independent of the rig.
+    record.rig = local_rig_state();
     record.timestamp = char(datetime('now', 'Format', 'yyyy-MM-dd''T''HH:mm:ss'));
     dateStr = char(datetime('now', 'Format', 'yyyy_MM_dd'));
     outPath = fullfile(outDir, [dateStr '_stim_manifest.jsonl']);
@@ -58,4 +65,17 @@ function s = local_signature(rec)
         h2 = mod(h2 * 16777619 + b(i), M);
     end
     s = lower([dec2hex(h1, 8), dec2hex(h2, 8)]);
+end
+
+
+function r = local_rig_state()
+% The rig hardware/calibration state stamped into every manifest row (from
+% rig_config.json via loadRigConfig), so each recording is self-describing for the
+% importer: which projector + mode, the gamma that was inverted, and the
+% projector-channel -> external-LED map. Missing fields are simply omitted.
+    cfg = loadRigConfig();
+    r = struct();
+    for f = {'projector', 'projector_mode', 'gamma', 'channel_to_led', 'led_spectra_file'}
+        if isstruct(cfg) && isfield(cfg, f{1}), r.(f{1}) = cfg.(f{1}); end
+    end
 end
