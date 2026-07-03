@@ -50,7 +50,7 @@ function AAJitteringCircleStimulusFinal(rfCenter, rfRadius, circleRadius, walkSp
 
     % ---- Precompute Jitter (Random Walk) ----
     % The circle jitters via an Ornstein-Uhlenbeck process:
-    % Step size per frame = walkSpeed / refreshRate * randn()
+    % Step size per frame = walkSpeed / refreshRate * N(0,1)
     % A small spring constant pulls it back toward rfCenter to prevent drift.
 
     posX = zeros(totalFrames, 1);
@@ -68,9 +68,11 @@ function AAJitteringCircleStimulusFinal(rfCenter, rfRadius, circleRadius, walkSp
     stream = RandStream('mt19937ar', 'Seed', 2);
 
     for f = 1:totalFrames
-        % Update position with random walk + spring back to center
-        dx = stepSigma * randn(stream);
-        dy = stepSigma * randn(stream);
+        % Update position with random walk + spring back to center.
+        % Inverse-CDF normals (not randn) so the walk reproduces from the seed
+        % in Python (mt19937ar rand() matches numpy RandomState).
+        dx = stepSigma * norminv(rand(stream));
+        dy = stepSigma * norminv(rand(stream));
 
         curX = curX + dx - k * (curX - rfCenter(1));
         curY = curY + dy - k * (curY - rfCenter(2));

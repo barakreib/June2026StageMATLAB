@@ -57,7 +57,10 @@ function AASeededGaussianCheckerboardSConeIsoStimFinal(seed, mu, sigma, flickerH
 
     % ---- Precompute noise ----
     stream = RandStream('mt19937ar', 'Seed', seed);
-    noiseVals = mu + sigma .* randn(stream, checksY, checksX, nUpdates);
+    % Inverse-CDF normals (not randn): uniform draws from mt19937ar rand() match
+    % numpy's RandomState exactly, so this noise reproduces from the seed in the
+    % Python analysis suite. norminv(u) == sqrt(2)*erfinv(2*u-1) (toolbox-free).
+    noiseVals = mu + sigma .* norminv(rand(stream, checksY, checksX, nUpdates));
     noiseVals = min(max(noiseVals, 0), 1);
 
     % ---- Precompute per-update S-cone iso images ----
