@@ -98,6 +98,11 @@ function AAJitteringCircleStimulusFinal(rfCenter, rfRadius, circleRadius, walkSp
         circColor = [1 1 1];
     end
 
+    % ---- Gamma-correct all streamed colors for the LightCrafter -> linear light ----
+    % (identity on the pure primaries used here; applied for uniform correctness)
+    circColor      = lcGammaCorrect(circColor);
+    rightBarColors = lcGammaCorrect(rightBarColors);
+
     % ---- Debug prints ----
     fprintf('\n--- Stage Jittering Circle Stimulus ---\n');
     fprintf('RF Center: (%.1f, %.1f), Radius: %.1f px\n', rfCenter(1), rfCenter(2), rfRadius);

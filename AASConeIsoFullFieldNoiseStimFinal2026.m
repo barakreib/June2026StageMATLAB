@@ -66,6 +66,12 @@ function AASConeIsoFullFieldNoiseStimFinal2026(flickerHz, stimFrames, refreshRat
         end
     end
 
+    % ---- Gamma-correct all streamed colors for the LightCrafter -> linear light ----
+    % (identity on the pure red/green/blue used here; applied for uniform
+    %  correctness so any future intermediate level is displayed linearly)
+    fullFieldColors = lcGammaCorrect(fullFieldColors);
+    rightBarColors  = lcGammaCorrect(rightBarColors);
+
     % ---- Stimuli ----
     fullField = Rectangle();
     fullField.size     = [W, H];

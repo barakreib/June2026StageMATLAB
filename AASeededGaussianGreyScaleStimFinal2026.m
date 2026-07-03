@@ -67,7 +67,7 @@ function AASeededGaussianGreyScaleStimFinal2026(seed, mu, sigma, flickerHz, stim
     for f = 1:stimFrames
         updateIdx = min(max(floor((f - 1) / updateEveryNFrames) + 1, 1), nUpdates);
         v = noiseVals(:, :, updateIdx);
-        g = uint8(round(v * 255));
+        g = uint8(round(255 * lcGammaCorrect(v)));   % gamma-correct -> linear light output
         img = zeros(checksY, checksX, 3, 'uint8');
         img(:,:,1) = g;
         img(:,:,2) = g;

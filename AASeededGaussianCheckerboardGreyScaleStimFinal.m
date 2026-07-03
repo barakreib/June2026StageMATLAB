@@ -64,7 +64,7 @@ function AASeededGaussianCheckerboardGreyScaleStimFinal(seed, mu, sigma, flicker
     grayImages = cell(nUpdates, 1);
     for u = 1:nUpdates
         v = noiseVals(:, :, u);
-        g = uint8(round(v * 255));
+        g = uint8(round(255 * lcGammaCorrect(v)));   % gamma-correct -> linear light output
         img = zeros(checksY, checksX, 3, 'uint8');
         img(:,:,1) = g;
         img(:,:,2) = g;

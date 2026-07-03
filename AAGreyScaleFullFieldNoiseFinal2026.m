@@ -68,6 +68,12 @@ function AAGreyScaleFullFieldNoiseFinal2026(flickerHz, stimFrames, refreshRate)
         end
     end
 
+    % ---- Gamma-correct all streamed colors for the LightCrafter -> linear light ----
+    % (identity on the pure black/white/blue used here; applied for uniform
+    %  correctness so any future intermediate level is displayed linearly)
+    fullFieldColors = lcGammaCorrect(fullFieldColors);
+    rightBarColors  = lcGammaCorrect(rightBarColors);
+
     % ---- Stimuli ----
     fullField = Rectangle();
     fullField.size     = [W, H];

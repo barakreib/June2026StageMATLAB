@@ -65,9 +65,9 @@ function AASeededGaussianCheckerboardSConeIsoStimFinal(seed, mu, sigma, flickerH
     for u = 1:nUpdates
         v = noiseVals(:, :, u);
         img = zeros(checksY, checksX, 3, 'uint8');
-        img(:,:,1) = uint8(round(v * 255));        % R = v
-        img(:,:,2) = uint8(round((1 - v) * 255));  % G = 1 - v
-        img(:,:,3) = uint8(0);                      % B = 0
+        img(:,:,1) = uint8(round(255 * lcGammaCorrect(v)));        % R = v     (gamma-corrected)
+        img(:,:,2) = uint8(round(255 * lcGammaCorrect(1 - v)));    % G = 1 - v (gamma-corrected)
+        img(:,:,3) = uint8(0);                                     % B = 0
         rgbImages{u} = img;
     end
 
