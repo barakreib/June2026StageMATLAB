@@ -1,0 +1,23 @@
+{
+  "format": "neitz-experiment/1",
+  "opts": {
+    "preStim": 2,
+    "postStim": 1,
+    "itp": 3,
+    "seedBase": 2
+  },
+  "blocks": [
+    {
+      "stim": "AAGreyScaleFullFieldNoiseFinal2026",
+      "params": { "flickerHz": 2, "stimFrames": 600, "refreshRate": 60 },
+      "epochs": 3,
+      "label": "2 Hz greyscale flicker"
+    },
+    {
+      "stim": "AASeededGaussianGreyScaleStimFinal2026",
+      "params": { "mu": 0.5, "sigma": 0.3, "flickerHz": 4, "stimFrames": 600, "refreshRate": 60 },
+      "epochs": 5,
+      "label": "greyscale Gaussian noise"
+    }
+  ]
+}
