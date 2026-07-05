@@ -6,3 +6,4 @@
 
 # machine-local Claude config — never commit
 .claude/
+timing_tests/

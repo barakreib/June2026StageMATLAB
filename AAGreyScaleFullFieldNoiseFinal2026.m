@@ -100,8 +100,7 @@ function AAGreyScaleFullFieldNoiseFinal2026(flickerHz, stimFrames, refreshRate)
         'flicker_hz',      flickerHz, ...
         'refresh_rate_hz', refreshRate, ...
         'stim_frames',     stimFrames);
-    manifestPath = writeStimManifest(pwd, record);
-    fprintf('[AAGreyScaleFullFieldNoiseFinal2026] Logged trial -> %s\n', manifestPath);
+    % Manifest logged AFTER play (with frame-sync telemetry) by playAndLogTrial, below.
 
     % ---- Presentation + player ----
     presentation = Presentation(totalDuration);
@@ -112,6 +111,6 @@ function AAGreyScaleFullFieldNoiseFinal2026(flickerHz, stimFrames, refreshRate)
 
     player = stage.builtin.players.RealtimePlayer(presentation);
     fprintf('[AAGreyScaleFullFieldNoiseFinal2026] Playing presentation (%.1f sec)...\n', totalDuration);
-    client.play(player);
+    playAndLogTrial(client, player, pwd, record, refreshRate, totalFrames);
     fprintf('[AAGreyScaleFullFieldNoiseFinal2026] Done.\n');
 end

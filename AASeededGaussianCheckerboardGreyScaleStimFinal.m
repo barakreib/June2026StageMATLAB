@@ -123,8 +123,7 @@ function AASeededGaussianCheckerboardGreyScaleStimFinal(seed, mu, sigma, flicker
         'gamma',                 loadRigConfig('gamma', 2.2056), ...
         'noise_method',          'mt19937ar+invCDF', ...
         'fill_order',            'F');
-    manifestPath = writeStimManifest(pwd, record);
-    fprintf('[AASeededGaussianCheckerboardGreyScaleStimFinal] Logged trial -> %s\n', manifestPath);
+    % Manifest logged AFTER play (with frame-sync telemetry) by playAndLogTrial, below.
 
     % ---- Debug prints ----
     fprintf('\n--- Stage Checkerboard Gaussian GRAYSCALE Stimulus ---\n');
@@ -161,6 +160,6 @@ function AASeededGaussianCheckerboardGreyScaleStimFinal(seed, mu, sigma, flicker
 
     player = stage.builtin.players.RealtimePlayer(presentation);
     fprintf('[AASeededGaussianCheckerboardGreyScaleStimFinal] Playing (%.1f sec)...\n', totalDuration);
-    client.play(player);
+    playAndLogTrial(client, player, pwd, record, refreshRate, totalFrames);
     fprintf('[AASeededGaussianCheckerboardGreyScaleStimFinal] Done.\n');
 end

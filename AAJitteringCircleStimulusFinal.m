@@ -160,8 +160,7 @@ function AAJitteringCircleStimulusFinal(rfCenter, rfRadius, circleRadius, walkSp
         'stim_frames',     stimFrames, ...
         'noise_method',    'mt19937ar+invCDF', ...
         'fill_order',      'F');
-    manifestPath = writeStimManifest(pwd, record);
-    fprintf('[AAJitteringCircle] Logged trial -> %s\n', manifestPath);
+    % Manifest logged AFTER play (with frame-sync telemetry) by playAndLogTrial, below.
 
     % ---- Presentation ----
     presentation = Presentation(totalDuration);
@@ -174,6 +173,6 @@ function AAJitteringCircleStimulusFinal(rfCenter, rfRadius, circleRadius, walkSp
 
     player = stage.builtin.players.RealtimePlayer(presentation);
     fprintf('[AAJitteringCircle] Playing...\n');
-    client.play(player);
+    playAndLogTrial(client, player, pwd, record, refreshRate, totalFrames);
     fprintf('[AAJitteringCircle] Done.\n');
 end

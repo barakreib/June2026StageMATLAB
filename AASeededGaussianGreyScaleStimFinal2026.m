@@ -117,8 +117,7 @@ function AASeededGaussianGreyScaleStimFinal2026(seed, mu, sigma, flickerHz, stim
         'gamma',                 loadRigConfig('gamma', 2.2056), ...
         'noise_method',          'mt19937ar+invCDF', ...
         'fill_order',            'F');
-    manifestPath = writeStimManifest(pwd, record);
-    fprintf('[AASeededGaussianGreyScaleStimFinal2026] Logged trial -> %s\n', manifestPath);
+    % Manifest logged AFTER play (with frame-sync telemetry) by playAndLogTrial, below.
 
     % ---- Debug prints ----
     fprintf('\n--- Stage Full-Field Gaussian GRAYSCALE Stimulus ---\n');
@@ -155,6 +154,6 @@ function AASeededGaussianGreyScaleStimFinal2026(seed, mu, sigma, flickerHz, stim
 
     player = stage.builtin.players.RealtimePlayer(presentation);
     fprintf('[AASeededGaussianGreyScaleStimFinal2026] Playing (%.1f sec)...\n', totalDuration);
-    client.play(player);
+    playAndLogTrial(client, player, pwd, record, refreshRate, totalFrames);
     fprintf('[AASeededGaussianGreyScaleStimFinal2026] Done.\n');
 end

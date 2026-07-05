@@ -44,7 +44,12 @@ function outPath = writeStimManifest(outDir, record)
     % Then stamp the rig hardware/calibration state so every row is self-describing.
     % Deliberately AFTER the signature: the stimulus identity is independent of the rig.
     record.rig = local_rig_state();
-    record.timestamp = char(datetime('now', 'Format', 'yyyy-MM-dd''T''HH:mm:ss'));
+    % Honor a pre-set timestamp: playAndLogTrial stamps it BEFORE play (acquisition time)
+    % and writes the row AFTER play (to include frame_sync), so the .abf pairing still sees
+    % ~play-start time. Stamp `now` only when the caller didn't (the standalone path).
+    if ~isfield(record, 'timestamp') || isempty(record.timestamp)
+        record.timestamp = char(datetime('now', 'Format', 'yyyy-MM-dd''T''HH:mm:ss'));
+    end
     dateStr = char(datetime('now', 'Format', 'yyyy_MM_dd'));
     outPath = fullfile(outDir, [dateStr '_stim_manifest.jsonl']);
 
@@ -65,8 +70,12 @@ function s = local_signature(rec)
 % (type/cone/mu/sigma/checks/...) changes it. jsonencode preserves struct field order, so
 % identical protocols hash identically. Two independent 31-bit rolling hashes (kept < 2^53
 % so double arithmetic is exact).
-    % Drop the fields that are NOT stimulus identity before hashing.
-    for f = {'seed', 'gamma'}
+    % Drop everything that is NOT stimulus identity before hashing: seed (varies per epoch),
+    % gamma (live rig state, already in `rig`), and the metadata / post-hoc fields
+    % (timestamp, rig, stim_signature, frame_sync) -- so repeated epochs of one protocol
+    % hash identically regardless of WHEN they ran or how many frames the display dropped.
+    % (On the standalone path these fields are absent at hash time, so it is a no-op there.)
+    for f = {'seed', 'gamma', 'timestamp', 'rig', 'stim_signature', 'frame_sync'}
         if isfield(rec, f{1}), rec = rmfield(rec, f{1}); end
     end
     b  = double(unicode2native(jsonencode(rec), 'UTF-8'));

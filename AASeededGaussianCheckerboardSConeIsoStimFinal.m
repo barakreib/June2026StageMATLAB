@@ -122,8 +122,7 @@ function AASeededGaussianCheckerboardSConeIsoStimFinal(seed, mu, sigma, flickerH
         'gamma',                 loadRigConfig('gamma', 2.2056), ...
         'noise_method',          'mt19937ar+invCDF', ...
         'fill_order',            'F');
-    manifestPath = writeStimManifest(pwd, record);
-    fprintf('[AASeededGaussianCheckerboardSConeIsoStimFinal] Logged trial -> %s\n', manifestPath);
+    % Manifest logged AFTER play (with frame-sync telemetry) by playAndLogTrial, below.
 
     % ---- Debug prints ----
     fprintf('\n--- Stage Checkerboard Gaussian S-Cone Isolation Stimulus ---\n');
@@ -160,6 +159,6 @@ function AASeededGaussianCheckerboardSConeIsoStimFinal(seed, mu, sigma, flickerH
 
     player = stage.builtin.players.RealtimePlayer(presentation);
     fprintf('[AASeededGaussianCheckerboardSConeIsoStimFinal] Playing (%.1f sec)...\n', totalDuration);
-    client.play(player);
+    playAndLogTrial(client, player, pwd, record, refreshRate, totalFrames);
     fprintf('[AASeededGaussianCheckerboardSConeIsoStimFinal] Done.\n');
 end

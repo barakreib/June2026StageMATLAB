@@ -117,8 +117,7 @@ function AASeededGaussianSConeIsoStimFinal2026(seed, mu, sigma, flickerHz, stimF
         'gamma',                 loadRigConfig('gamma', 2.2056), ...
         'noise_method',          'mt19937ar+invCDF', ...
         'fill_order',            'F');
-    manifestPath = writeStimManifest(pwd, record);
-    fprintf('[AASeededGaussianSConeIsoStimFinal2026] Logged trial -> %s\n', manifestPath);
+    % Manifest logged AFTER play (with frame-sync telemetry) by playAndLogTrial, below.
 
     % ---- Debug prints ----
     fprintf('\n--- Stage Full-Field Gaussian S-Cone Isolation Stimulus ---\n');
@@ -155,6 +154,6 @@ function AASeededGaussianSConeIsoStimFinal2026(seed, mu, sigma, flickerHz, stimF
 
     player = stage.builtin.players.RealtimePlayer(presentation);
     fprintf('[AASeededGaussianSConeIsoStimFinal2026] Playing (%.1f sec)...\n', totalDuration);
-    client.play(player);
+    playAndLogTrial(client, player, pwd, record, refreshRate, totalFrames);
     fprintf('[AASeededGaussianSConeIsoStimFinal2026] Done.\n');
 end
