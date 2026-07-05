@@ -31,7 +31,7 @@ function stimulusGUI(mode)
 
     % ================= nested callbacks (share reg / blocks / curEntry / h) =================
     function buildUI()
-        h.fig = uifigure('Name', 'Neitz Stimulus GUI', 'Position', [80 80 1000 660]);
+        h.fig = uifigure('Name', 'Neitz Stimulus GUI', 'Position', [80 80 1000 780]);
         outer = uigridlayout(h.fig, [1 2]);
         outer.ColumnWidth = {250, '1x'};
 
@@ -42,8 +42,8 @@ function stimulusGUI(mode)
             'Add block, repeat to chain blocks, then Run.'], numel(reg)), ...
             'WordWrap', 'on', 'FontAngle', 'italic');
 
-        rp = uigridlayout(outer, [7 1]);
-        rp.RowHeight = {24, '1x', 38, 22, '1.2x', 34, 38};
+        rp = uigridlayout(outer, [9 1]);
+        rp.RowHeight = {24, '1x', 38, 20, '1.05x', 26, 118, 34, 38};
 
         h.paramTitle = uilabel(rp, 'Text', 'Parameters', 'FontWeight', 'bold');
         h.paramTable = uitable(rp, 'ColumnName', {'Parameter', 'Value'}, ...
@@ -60,6 +60,23 @@ function stimulusGUI(mode)
 
         h.protoTable = uitable(rp, 'ColumnName', {'#', 'Stimulus', 'Epochs', 'Label', 'Params'}, ...
             'ColumnWidth', {30, 240, 60, 120, '1x'}, 'RowName', {}, 'SelectionType', 'row');
+
+        % ----- LEDs (NeitzLedRig): optional per-session RGB channel intensities -----
+        lh = uigridlayout(rp, [1 6]); lh.ColumnWidth = {'fit', 'fit', 'fit', 150, 'fit', '1x'};
+        uilabel(lh, 'Text', 'LEDs:', 'FontWeight', 'bold');
+        h.ledEnable = uicheckbox(lh, 'Text', 'Enable', 'Value', false, ...
+            'Tooltip', 'Off = LEDs untouched (local tests). On = runExperiment opens NeitzLedRig and applies the grid below around the run.');
+        uilabel(lh, 'Text', 'Mode');
+        h.ledMode = uidropdown(lh, 'Items', {'off (0)', 'DC red (1)', 'video RGB (2)', 'video RGB + sync (3)'}, ...
+            'ItemsData', [0 1 2 3], 'Value', 2);
+        uilabel(lh, 'Text', 'Port');
+        h.ledPort = uieditfield(lh, 'text', 'Value', 'AUTO', ...
+            'Tooltip', 'AUTO auto-detects the FPGA; or a COM name (Windows 11) / /dev/cu.* node (macOS).');
+
+        h.ledTable = uitable(rp, 'Data', zeros(4, 3), ...
+            'ColumnName', {'R', 'G', 'B'}, 'RowName', {'LED 0', 'LED 1', 'LED 2', 'LED 3'}, ...
+            'ColumnEditable', [true true true], 'ColumnWidth', {70, 70, 70}, ...
+            'Tooltip', 'Per-LED intensity, 0..1 linear duty (pre-distort like lcGammaCorrect for eye-linear).');
 
         og = uigridlayout(rp, [1 9]); og.ColumnWidth = {'fit', 58, 'fit', 58, 'fit', 58, 'fit', 58, '1x'};
         uilabel(og, 'Text', 'preStim (s)');  h.preStim  = uieditfield(og, 'numeric', 'Value', 2, 'Limits', [0 Inf]);
@@ -162,6 +179,8 @@ function stimulusGUI(mode)
             h.postStim.Value = getfielddef(o, 'postStim', 1);
             h.itp.Value      = getfielddef(o, 'itp', 3);
             h.seedBase.Value = getfielddef(o, 'seedBase', 2);
+            if isfield(o, 'triggerAcq'), h.triggerAcq.Value = logical(o.triggerAcq); end
+            applyLedsToUI(getfielddef(o, 'leds', struct()));
             refreshProtocol();
         catch err
             uialert(h.fig, err.message, 'Load failed');
@@ -183,6 +202,26 @@ function stimulusGUI(mode)
         o = struct('preStim', h.preStim.Value, 'postStim', h.postStim.Value, ...
                    'itp', h.itp.Value, 'seedBase', round(h.seedBase.Value), ...
                    'triggerAcq', logical(h.triggerAcq.Value));
+        o.leds = gatherLeds();
+    end
+
+    function leds = gatherLeds()
+        I = h.ledTable.Data;
+        if iscell(I), I = cell2mat(I); end
+        leds = struct('enabled', logical(h.ledEnable.Value), ...
+                      'port', char(h.ledPort.Value), ...
+                      'mode', double(h.ledMode.Value), ...
+                      'intensity', double(I));
+    end
+
+    function applyLedsToUI(L)
+        if ~isstruct(L), return; end
+        h.ledEnable.Value = logical(getfielddef(L, 'enabled', false));
+        h.ledPort.Value   = char(getfielddef(L, 'port', 'AUTO'));
+        m = double(getfielddef(L, 'mode', 2));
+        if ismember(m, [0 1 2 3]), h.ledMode.Value = m; end
+        I = double(getfielddef(L, 'intensity', zeros(4, 3)));
+        if isequal(size(I), [4, 3]), h.ledTable.Data = I; else, h.ledTable.Data = zeros(4, 3); end
     end
 end
 
@@ -352,11 +391,17 @@ function selftest()
     blocks(1) = struct('stimName', g.name, 'fnName', g.fn, 'params', ps, 'epochs', 5, 'label', 'grey gauss');
     blocks(2) = struct('stimName', j.name, 'fnName', j.fn, 'params', pj, 'epochs', 3, 'label', 'jit');
     opts = struct('preStim', 2, 'postStim', 1, 'itp', 3, 'seedBase', 7);
+    opts.leds = struct('enabled', true, 'port', 'AUTO', 'mode', 2, ...
+                       'intensity', [0.75 0 0; 0 0.5 0; 0 0 0; 0 0 0.125]);
     [b2, o2] = local_jsonToExperiment(reg, local_experimentToJson(blocks, opts));
     assert(numel(b2) == 2 && strcmp(b2(1).fnName, g.fn) && b2(1).epochs == 5, 'json round-trip blocks');
     assert(isequal(local_argsFor(local_findEntry(reg, b2(1).fnName), b2(1).params), {[], 0.5, 0.3, 4, 600, 60}), ...
         'json round-trip rebuilds gaussian args');
     assert(o2.seedBase == 7, 'json round-trip opts');
+    assert(o2.leds.enabled && o2.leds.mode == 2, 'json round-trip LED scalars');
+    assert(isequal(size(o2.leds.intensity), [4, 3]) && abs(o2.leds.intensity(1, 1) - 0.75) < 1e-9, ...
+        'json round-trip LED 4x3 grid');
+    fprintf('[selftest] LED config round-trips (enable + mode + 4x3 grid)\n');
 
     proto = local_buildProtocol(reg, blocks);
     assert(numel(proto) == 2 && proto(1).seedArg == 1 && proto(2).seedArg == 0, 'buildProtocol seedArg per block');

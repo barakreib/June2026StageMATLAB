@@ -29,6 +29,15 @@ function runExperiment(protocol, opts)
 %       .continueOnError false   keep going after a failed epoch (default: ABORT the
 %                                session, so no .abf is left without its manifest row)
 %       .seedBase        2       first auto-increment seed (used with protocol.seedArg)
+%       .leds            []      optional LED-driver setup for the whole session via
+%                                NeitzLedRig (ml-uled). Struct with: .enabled (logical),
+%                                .port ('AUTO' | a COM / '/dev/cu.*' name), .mode (0 off |
+%                                1 DC-red | 2/3 video RGB), .intensity (4x3 of 0..1 LINEAR
+%                                DUTY; rows = LED 0..3, cols = R/G/B). Opened AFTER the Stage
+%                                pre-flight, before any acquisition, and darkened + closed
+%                                automatically on normal finish OR abort. Omit / enabled=false
+%                                leaves the LEDs untouched (local tests, no FPGA present).
+%       .ledFactory      @NeitzLedRig  driver constructor (a test seam; leave default at rig)
 %
 %   Example protocol + call: see Experimenter5000.m
 %
@@ -62,6 +71,11 @@ function runExperiment(protocol, opts)
             error('runExperiment:noServer', ...
                   'Stage server not reachable (start it first). Underlying error: %s', err.message);
         end
+    end
+
+    % ---- optional LED-driver setup (additive; darks + closes on ANY exit) ----
+    if isfield(opts, 'leds') && isstruct(opts.leds) && getf(opts.leds, 'enabled', false)
+        ledCleanup = local_setupLeds(opts.leds, getf(opts, 'ledFactory', @NeitzLedRig)); %#ok<NASGU>
     end
 
     % ---- run ----
@@ -114,4 +128,27 @@ end
 function v = subsref_default(s, f, dv)
 % field-or-default: s.(f) if present and non-empty, else dv
     if isfield(s, f) && ~isempty(s.(f)), v = s.(f); else, v = dv; end
+end
+
+
+function cu = local_setupLeds(L, newRig)
+% Open the LED driver, load the 4x3 intensity grid (0..1 linear duty), enable the requested
+% mode, and return an onCleanup that darks (mode 0) + closes the port on ANY exit (normal
+% finish, an aborted epoch, or Ctrl-C). Values are passed straight to NeitzLedRig.setIntensity
+% as LINEAR DUTY -- pre-distort (like lcGammaCorrect) beforehand if you want light linear at
+% the eye. The stimulus m-scripts are untouched; the LEDs are configured AROUND the run.
+    port = subsref_default(L, 'port', 'AUTO');
+    mode = subsref_default(L, 'mode', 2);
+    I    = subsref_default(L, 'intensity', zeros(4, 3));
+    led  = newRig(port);                 % opens the serial port (an error here ABORTS, intended)
+    led.setMode(0);                      % dark while the registers load
+    cols = {'r', 'g', 'b'};
+    for li = 1:size(I, 1)
+        for ci = 1:min(3, size(I, 2))
+            led.setIntensity(li - 1, cols{ci}, I(li, ci));
+        end
+    end
+    led.setMode(mode);
+    fprintf('[runExperiment] LED driver configured on %s (mode %d).\n', string(port), mode);
+    cu = onCleanup(@() delete(led));     % NeitzLedRig destructor sets mode 0 + closes the port
 end

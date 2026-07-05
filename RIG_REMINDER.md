@@ -121,9 +121,14 @@ See `ml-uled/README.md`. Standalone from the OpenGL scripts.
 3. ☐ `rig.setMode(2); rig.setTtlDebug(true,1,0,0)` etc. → colour-field select works.
 4. ☐ Confirm a value set here matches the old C# `uLED` GUI setting it (same registers).
 5. ☐ `rig.setMode(0); clear rig` → LEDs dark, port closed.
-6. ☐ **Integration (design decision, not built yet):** decide how LED intensities should be
-   set relative to a stimulus (cone-iso weights). It can be wired additively — around the
-   OpenGL scripts, not inside them — see the note at the bottom.
+6. ☐ **GUI-driven (now built into the experiment):** in `stimulusGUI`, fill the **LEDs** grid
+   (per-LED R/G/B, 0..1 linear duty), pick a **Mode**, tick **Enable**, add a block, Run.
+   Expect `runExperiment` to print `LED driver configured on <port> (mode M)`, drive the LEDs
+   through the blocks, and **dark + close** them when the session ends **or aborts**. Then
+   **Save…** and **Load…** the experiment and confirm the grid / mode / port persist in the
+   JSON (`opts.leds`). Values are **linear duty** (pre-distort like `lcGammaCorrect` if you
+   want light linear at the eye). Leave **Enable off** (and "Trigger Clampex acq" off) for a
+   local dry run with no FPGA. Per-session config for now — one LED setup per experiment.
 
 ---
 
