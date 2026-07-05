@@ -14,6 +14,10 @@
     "B": "TODO: external LED driven by the projector B timing signal"
   },
   "led_spectra_file": "TODO: path to measured LED spectra (e.g. rig calibration measurements.xlsx)",
+  "led_presets": [
+    { "name": "Off", "values": [[0,0,0],[0,0,0],[0,0,0],[0,0,0]] },
+    { "name": "macaque s-iso", "values": [[0,0,0],[0.136,0.1085,10],[0.2708,0.3271,10],[1,0.0264,0]] }
+  ],
   "cone_isolation": {
     "method": "R<->G crossfade (R=v, G=1-v) with B=0",
     "silent_substitution_weights": "TODO: derive from LED spectra + cone fundamentals; verify isolation"
