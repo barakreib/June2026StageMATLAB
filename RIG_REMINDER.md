@@ -43,6 +43,11 @@ Clampex acq"** before Run. Then:
 - **macOS caveat:** the Clampex trigger uses Windows-only `.NET System.Windows.Forms`, so
   it *only* works on the Windows rig PC. On the Mac you **must** leave that box unchecked or
   Run will error at the trigger step. Leave it **checked** at the real (Windows) rig.
+- **Remote Stage server:** if the Stage/OpenGL server runs on a *different* computer, put
+  its **IPv4 in the "Stage host" field** (or `rig_config.json` → `stage_host`); blank /
+  `localhost` = this machine. It's saved to `rig_config` on Run, so the stimulus scripts'
+  `client.connect(stageHost())` reach it — the centralized version of the old
+  comment/uncomment-the-connect-line pattern (your `192.168.0.49` / `192.168.86.55` scripts).
 - Each Run still writes a manifest row (`YYYY_MM_DD_stim_manifest.jsonl`) into `pwd`, so
   you can eyeball that too.
 
