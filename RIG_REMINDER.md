@@ -54,6 +54,11 @@ Clampex acq"** before Run. Then:
 ---
 
 ## §0 — Local dry run (no cell, no Clampex)   ☐
+**Fastest OpenGL-only isolation:** edit the flags at the top of **`debugStimulus.m`**
+(`Call_ClampEx = false`, `Call_OpenGL = true`, `Call_LED = false`) and run it — it presents
+ONE stimulus through the normal path with everything else switched off, and prints exactly
+what's on (`OpenGL=1 Clampex=0 LED=0 …`). Use this to troubleshoot presentation + DLP
+linearization without wondering what else is firing. The GUI route below does the same:
 1. ☐ Start the Stage server locally.
 2. ☐ `stimulusGUI` → pick **Greyscale full-field flicker** → **uncheck "Trigger Clampex
    acq"** → **Run experiment**.
