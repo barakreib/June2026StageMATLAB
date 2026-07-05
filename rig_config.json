@@ -3,24 +3,20 @@
   "projector": "TI LightCrafter 4500",
   "projector_mode": "Video",
   "refresh_rate_hz": 60,
-  "stage_host": "localhost",
-
+  "stage_host": "192.168.0.51",
   "gamma": 2.2056,
   "gamma_model": "power",
   "gamma_source": "power fit of rig calibration measurements ('DLP power function' sheet), R^2 ~ 1",
   "gamma_calibrated_on": "2026-03-06",
-
   "channel_to_led": {
     "R": "TODO: external LED driven by the projector R timing signal (identity + peak nm + driver)",
     "G": "TODO: external LED driven by the projector G timing signal",
     "B": "TODO: external LED driven by the projector B timing signal"
   },
   "led_spectra_file": "TODO: path to measured LED spectra (e.g. rig calibration measurements.xlsx)",
-
   "cone_isolation": {
     "method": "R<->G crossfade (R=v, G=1-v) with B=0",
     "silent_substitution_weights": "TODO: derive from LED spectra + cone fundamentals; verify isolation"
   },
-
   "notes": "Single source of truth for the rig's hardware + gamma state; travels with the data via the stimulus manifest. gamma is re-derivable with calibrateGamma.m. After editing this file, run `clear loadRigConfig` in MATLAB to drop the cache. Fill the TODO hardware fields."
 }
