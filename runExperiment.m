@@ -137,6 +137,11 @@ function cu = local_setupLeds(L, newRig)
 % finish, an aborted epoch, or Ctrl-C). Values are passed straight to NeitzLedRig.setIntensity
 % as LINEAR DUTY -- pre-distort (like lcGammaCorrect) beforehand if you want light linear at
 % the eye. The stimulus m-scripts are untouched; the LEDs are configured AROUND the run.
+    % the LED driver class lives in the ml-uled/ subfolder -- ensure it's on the path
+    % (so a bare addpath(repo), not addpath(genpath(repo)), still finds NeitzLedRig)
+    if exist('NeitzLedRig', 'class') ~= 8
+        addpath(fullfile(fileparts(mfilename('fullpath')), 'ml-uled'));
+    end
     port = subsref_default(L, 'port', 'AUTO');
     mode = subsref_default(L, 'mode', 2);
     I    = subsref_default(L, 'intensity', zeros(4, 3));
