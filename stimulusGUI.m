@@ -31,7 +31,7 @@ function stimulusGUI(mode)
 
     % ================= nested callbacks (share reg / blocks / curEntry / h) =================
     function buildUI()
-        h.fig = uifigure('Name', 'Neitz Stimulus GUI', 'Position', [80 80 1000 780]);
+        h.fig = uifigure('Name', 'Neitz Stimulus GUI', 'Position', [80 80 1020 820]);
         outer = uigridlayout(h.fig, [1 2]);
         outer.ColumnWidth = {250, '1x'};
 
@@ -43,13 +43,14 @@ function stimulusGUI(mode)
             'WordWrap', 'on', 'FontAngle', 'italic');
 
         rp = uigridlayout(outer, [9 1]);
-        rp.RowHeight = {24, '1x', 38, 20, '1.05x', 26, 118, 34, 38};
+        rp.RowHeight = {24, '1x', 40, 20, '1x', 36, 152, 36, 40};
 
         h.paramTitle = uilabel(rp, 'Text', 'Parameters', 'FontWeight', 'bold');
         h.paramTable = uitable(rp, 'ColumnName', {'Parameter', 'Value'}, ...
             'ColumnEditable', [false true], 'ColumnWidth', {180, 220}, 'RowName', {});
 
         er = uigridlayout(rp, [1 5]); er.ColumnWidth = {60, 70, 55, '1x', 130};
+        er.Padding = [6 3 6 3];
         uilabel(er, 'Text', 'Epochs:');
         h.epochs = uieditfield(er, 'numeric', 'Value', 5, 'Limits', [1 Inf], 'RoundFractionalValues', 'on');
         uilabel(er, 'Text', 'Label:');
@@ -62,7 +63,9 @@ function stimulusGUI(mode)
             'ColumnWidth', {30, 240, 60, 120, '1x'}, 'RowName', {}, 'SelectionType', 'row');
 
         % ----- LEDs (NeitzLedRig): optional per-session RGB channel intensities -----
-        lh = uigridlayout(rp, [1 6]); lh.ColumnWidth = {'fit', 'fit', 'fit', 150, 'fit', '1x'};
+        lh = uigridlayout(rp, [1 7]);
+        lh.ColumnWidth = {'fit', 'fit', 'fit', 150, 'fit', 170, '1x'};
+        lh.Padding = [6 4 6 4]; lh.ColumnSpacing = 8;
         uilabel(lh, 'Text', 'LEDs:', 'FontWeight', 'bold');
         h.ledEnable = uicheckbox(lh, 'Text', 'Enable', 'Value', false, ...
             'Tooltip', 'Off = LEDs untouched (local tests). On = runExperiment opens NeitzLedRig and applies the grid below around the run.');
@@ -79,6 +82,7 @@ function stimulusGUI(mode)
             'Tooltip', 'Per-LED intensity, 0..1 linear duty (pre-distort like lcGammaCorrect for eye-linear).');
 
         og = uigridlayout(rp, [1 9]); og.ColumnWidth = {'fit', 58, 'fit', 58, 'fit', 58, 'fit', 58, '1x'};
+        og.Padding = [6 3 6 3];
         uilabel(og, 'Text', 'preStim (s)');  h.preStim  = uieditfield(og, 'numeric', 'Value', 2, 'Limits', [0 Inf]);
         uilabel(og, 'Text', 'postStim (s)'); h.postStim = uieditfield(og, 'numeric', 'Value', 1, 'Limits', [0 Inf]);
         uilabel(og, 'Text', 'itp (s)');      h.itp      = uieditfield(og, 'numeric', 'Value', 3, 'Limits', [0 Inf]);
@@ -88,6 +92,7 @@ function stimulusGUI(mode)
                         '(e.g. Stage server on this machine, no rig). Leave checked at the rig.']);
 
         bg = uigridlayout(rp, [1 5]); bg.ColumnWidth = {'1x', '1x', '1x', '1x', '1.4x'};
+        bg.Padding = [6 4 6 4];
         uibutton(bg, 'Text', 'Remove block', 'ButtonPushedFcn', @(s,e) onRemoveBlock());
         uibutton(bg, 'Text', 'New',          'ButtonPushedFcn', @(s,e) onNew());
         uibutton(bg, 'Text', 'Save...',      'ButtonPushedFcn', @(s,e) onSave());
