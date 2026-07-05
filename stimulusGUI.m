@@ -31,7 +31,7 @@ function stimulusGUI(mode)
 
     % ================= nested callbacks (share reg / blocks / curEntry / h) =================
     function buildUI()
-        h.fig = uifigure('Name', 'Neitz Stimulus GUI', 'Position', [80 80 1020 860]);
+        h.fig = uifigure('Name', 'Neitz Stimulus GUI', 'Position', [80 80 1020 900]);
         outer = uigridlayout(h.fig, [1 2]);
         outer.ColumnWidth = {250, '1x'};
 
@@ -42,8 +42,8 @@ function stimulusGUI(mode)
             'Add block, repeat to chain blocks, then Run.'], numel(reg)), ...
             'WordWrap', 'on', 'FontAngle', 'italic');
 
-        rp = uigridlayout(outer, [10 1]);
-        rp.RowHeight = {24, '1x', 40, 20, '1x', 36, 152, 34, 36, 40};
+        rp = uigridlayout(outer, [11 1]);
+        rp.RowHeight = {24, '1x', 40, 20, '1x', 36, 152, 34, 36, 28, 40};
 
         h.paramTitle = uilabel(rp, 'Text', 'Parameters', 'FontWeight', 'bold');
         h.paramTable = uitable(rp, 'ColumnName', {'Parameter', 'Value'}, ...
@@ -98,6 +98,11 @@ function stimulusGUI(mode)
         h.triggerAcq = uicheckbox(og, 'Text', 'Trigger Clampex acq', 'Value', true, ...
             'Tooltip', ['Uncheck for a local dry run: present OpenGL only, no Clampex trigger ' ...
                         '(e.g. Stage server on this machine, no rig). Leave checked at the rig.']);
+
+        h.debug = uicheckbox(rp, 'Value', false, 'ValueChangedFcn', @(s,e) onDebugToggle(), ...
+            'Text', 'Debug: present OpenGL only  (forces Clampex trigger + LED driver OFF for this Run)', ...
+            'FontWeight', 'bold', 'Tooltip', ...
+            'Same as debugStimulus.m: Run still presents via the Stage host, but sends no Clampex keystrokes and never opens the LED driver. Overrides the two checkboxes above.');
 
         bg = uigridlayout(rp, [1 5]); bg.ColumnWidth = {'1x', '1x', '1x', '1x', '1.4x'};
         bg.Padding = [6 4 6 4];
@@ -227,6 +232,17 @@ function stimulusGUI(mode)
                    'itp', h.itp.Value, 'seedBase', round(h.seedBase.Value), ...
                    'triggerAcq', logical(h.triggerAcq.Value));
         o.leds = gatherLeds();
+        if h.debug.Value                 % Debug: OpenGL only -> force Clampex trigger + LED off
+            o.triggerAcq   = false;
+            o.leds.enabled = false;
+        end
+    end
+
+    function onDebugToggle()
+        state = 'on';
+        if h.debug.Value, state = 'off'; end   % grey out the boxes Debug overrides
+        h.triggerAcq.Enable = state;
+        h.ledEnable.Enable  = state;
     end
 
     function leds = gatherLeds()
