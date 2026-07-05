@@ -20,10 +20,11 @@ function outPath = writeStimManifest(outDir, record)
 %                          (projector, projector_mode, gamma, channel_to_led, ...), so
 %                          each recording is self-describing for the importer. Stamped
 %                          AFTER the signature, so it does not affect stimulus identity.
-%     - `stim_signature` : a hash of the record's DEFINING params. Repeated IDENTICAL
-%                          stimuli (e.g. Experimenter5000_v2 running the same 2 Hz square
-%                          wave 3x) get the SAME stim_signature, so the importer groups
-%                          them as N epochs of ONE stimulus; different stimuli differ.
+%     - `stim_signature` : a hash of the record's DEFINING params EXCLUDING the seed
+%                          (the seed varies per epoch for independent noise). Repeated
+%                          epochs of the same PROTOCOL therefore share a stim_signature,
+%                          so the importer groups them as N epochs of ONE stimulus; any
+%                          protocol change (type/cone/mu/sigma/checks/...) differs.
 %                          Computed per call, so it works for the plain trial-loop
 %                          (Experimenter5000_v2) and runExperiment alike, with no
 %                          coordination between calls and no change to acquisition.
@@ -53,10 +54,13 @@ end
 
 
 function s = local_signature(rec)
-% Deterministic 16-hex-char signature of a record's defining params. jsonencode
-% preserves the struct's field order, so two identical records produce identical JSON
-% (hence the same signature); any changed param changes it. Two independent 31-bit
-% rolling hashes (kept < 2^53 so double arithmetic is exact) -> ~62-bit, pure MATLAB.
+% Deterministic 16-hex-char signature of a record's DEFINING params, EXCLUDING seed.
+% The seed varies per epoch (independent noise realizations), so it is dropped before
+% hashing: N epochs of the same PROTOCOL then share a signature and group as "N epochs
+% of one stimulus," while any protocol change (type/cone/mu/sigma/checks/...) changes it.
+% jsonencode preserves struct field order, so identical protocols hash identically.
+% Two independent 31-bit rolling hashes (kept < 2^53 so double arithmetic is exact).
+    if isfield(rec, 'seed'), rec = rmfield(rec, 'seed'); end   % seed varies per epoch -> not part of identity
     b  = double(unicode2native(jsonencode(rec), 'UTF-8'));
     h1 = 0; h2 = 0;
     M  = 2^31 - 1;                          % Mersenne prime modulus

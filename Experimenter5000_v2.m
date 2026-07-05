@@ -33,13 +33,18 @@ for ind = 1:nTrials
 
     pause(pre_stim); % pre-stimulus window
 
+    % Auto-increment the seed per trial so repeated seeded-noise trials are INDEPENDENT
+    % noise realizations (each seed is recorded in the day's stim manifest). Only the
+    % seeded-Gaussian lines below use `seed`; the flicker/jitter lines ignore it.
+    seed = 2 + (ind - 1);
+
     % ===== UNCOMMENT ONE STIMULUS =====
     AAGreyScaleFullFieldNoiseFinal2026(flickerHz, stimFrames, refreshRate);
 %   AASConeIsoFullFieldNoiseStimFinal2026(flickerHz, stimFrames, refreshRate);
-%   AASeededGaussianGreyScaleStimFinal2026([], [], [], flickerHz, stimFrames, refreshRate);
-%   AASeededGaussianSConeIsoStimFinal2026([], [], [], flickerHz, stimFrames, refreshRate);
-%   AASeededGaussianCheckerboardGreyScaleStimFinal([], [], [], flickerHz, stimFrames, refreshRate);
-%   AASeededGaussianCheckerboardSConeIsoStimFinal([], [], [], flickerHz, stimFrames, refreshRate);
+%   AASeededGaussianGreyScaleStimFinal2026(seed, [], [], flickerHz, stimFrames, refreshRate);
+%   AASeededGaussianSConeIsoStimFinal2026(seed, [], [], flickerHz, stimFrames, refreshRate);
+%   AASeededGaussianCheckerboardGreyScaleStimFinal(seed, [], [], flickerHz, stimFrames, refreshRate);
+%   AASeededGaussianCheckerboardSConeIsoStimFinal(seed, [], [], flickerHz, stimFrames, refreshRate);
 %   AAJitteringCircleStimulusFinal([], [], [], [], stimFrames, refreshRate, []);
 
     pause(stim_dur+1);

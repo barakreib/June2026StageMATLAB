@@ -69,10 +69,11 @@ function AAJitteringCircleStimulusFinal(rfCenter, rfRadius, circleRadius, walkSp
 
     for f = 1:totalFrames
         % Update position with random walk + spring back to center.
-        % Inverse-CDF normals (not randn) so the walk reproduces from the seed
-        % in Python (mt19937ar rand() matches numpy RandomState).
-        dx = stepSigma * norminv(rand(stream));
-        dy = stepSigma * norminv(rand(stream));
+        % Inverse-CDF normals (not randn) so the walk reproduces from the seed in
+        % Python. Uses erfinv (base MATLAB), NOT norminv (Stats Toolbox):
+        % sqrt(2)*erfinv(2*u-1) == norminv(u) exactly.
+        dx = stepSigma * sqrt(2) * erfinv(2 * rand(stream) - 1);
+        dy = stepSigma * sqrt(2) * erfinv(2 * rand(stream) - 1);
 
         curX = curX + dx - k * (curX - rfCenter(1));
         curY = curY + dy - k * (curY - rfCenter(2));
