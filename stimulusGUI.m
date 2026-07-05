@@ -61,11 +61,14 @@ function stimulusGUI(mode)
         h.protoTable = uitable(rp, 'ColumnName', {'#', 'Stimulus', 'Epochs', 'Label', 'Params'}, ...
             'ColumnWidth', {30, 240, 60, 120, '1x'}, 'RowName', {}, 'SelectionType', 'row');
 
-        og = uigridlayout(rp, [1 8]); og.ColumnWidth = {'fit', 66, 'fit', 66, 'fit', 66, 'fit', 66};
+        og = uigridlayout(rp, [1 9]); og.ColumnWidth = {'fit', 58, 'fit', 58, 'fit', 58, 'fit', 58, '1x'};
         uilabel(og, 'Text', 'preStim (s)');  h.preStim  = uieditfield(og, 'numeric', 'Value', 2, 'Limits', [0 Inf]);
         uilabel(og, 'Text', 'postStim (s)'); h.postStim = uieditfield(og, 'numeric', 'Value', 1, 'Limits', [0 Inf]);
         uilabel(og, 'Text', 'itp (s)');      h.itp      = uieditfield(og, 'numeric', 'Value', 3, 'Limits', [0 Inf]);
         uilabel(og, 'Text', 'seedBase');     h.seedBase = uieditfield(og, 'numeric', 'Value', 2, 'Limits', [0 Inf], 'RoundFractionalValues', 'on');
+        h.triggerAcq = uicheckbox(og, 'Text', 'Trigger Clampex acq', 'Value', true, ...
+            'Tooltip', ['Uncheck for a local dry run: present OpenGL only, no Clampex trigger ' ...
+                        '(e.g. Stage server on this machine, no rig). Leave checked at the rig.']);
 
         bg = uigridlayout(rp, [1 5]); bg.ColumnWidth = {'1x', '1x', '1x', '1x', '1.4x'};
         uibutton(bg, 'Text', 'Remove block', 'ButtonPushedFcn', @(s,e) onRemoveBlock());
@@ -178,7 +181,8 @@ function stimulusGUI(mode)
 
     function o = gatherOpts()
         o = struct('preStim', h.preStim.Value, 'postStim', h.postStim.Value, ...
-                   'itp', h.itp.Value, 'seedBase', round(h.seedBase.Value));
+                   'itp', h.itp.Value, 'seedBase', round(h.seedBase.Value), ...
+                   'triggerAcq', logical(h.triggerAcq.Value));
     end
 end
 
