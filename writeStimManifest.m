@@ -6,9 +6,11 @@ function outPath = writeStimManifest(outDir, record)
 %   Writes one JSON object per line (JSON Lines) to
 %       <outDir>/YYYY_MM_DD_stim_manifest.jsonl
 %   i.e. one row per trial, in trial order. The Neitz_Analysis_Suite pairs each row
-%   with the Clampex .abf recorded for that trial BY ORDER (cross-checked by the
-%   timestamp), then regenerates the exact stimulus noise from record.seed via
-%   reproduce_noise -- so NO per-frame stimulus values need to be stored or shipped.
+%   with the Clampex .abf recorded for that trial BY ORDER (and refuses to pair when the
+%   row and recording counts disagree), then regenerates the exact stimulus noise from
+%   record.seed via reproduce_noise -- so NO per-frame stimulus values need to be stored
+%   or shipped. (The `timestamp` below is recorded for provenance; using it as an order
+%   cross-check is a future hardening -- see the suite's apply_session_manifest.)
 %
 %   `record` is a struct of metadata: seed, mu, sigma, checks_x, checks_y,
 %   n_updates, update_every_n_frames, refresh_rate_hz, stim_frames, gamma,
@@ -54,13 +56,18 @@ end
 
 
 function s = local_signature(rec)
-% Deterministic 16-hex-char signature of a record's DEFINING params, EXCLUDING seed.
-% The seed varies per epoch (independent noise realizations), so it is dropped before
-% hashing: N epochs of the same PROTOCOL then share a signature and group as "N epochs
-% of one stimulus," while any protocol change (type/cone/mu/sigma/checks/...) changes it.
-% jsonencode preserves struct field order, so identical protocols hash identically.
-% Two independent 31-bit rolling hashes (kept < 2^53 so double arithmetic is exact).
-    if isfield(rec, 'seed'), rec = rmfield(rec, 'seed'); end   % seed varies per epoch -> not part of identity
+% Deterministic 16-hex-char signature of a record's DEFINING params, EXCLUDING the seed
+% and gamma. The seed varies per epoch (independent noise realizations) and gamma is live
+% rig-calibration state (already captured in the `rig` block), so both are dropped before
+% hashing: N epochs of the same PROTOCOL then share a signature and group as "N epochs of
+% one stimulus" -- even across a mid-session recalibration -- while any protocol change
+% (type/cone/mu/sigma/checks/...) changes it. jsonencode preserves struct field order, so
+% identical protocols hash identically. Two independent 31-bit rolling hashes (kept < 2^53
+% so double arithmetic is exact).
+    % Drop the fields that are NOT stimulus identity before hashing.
+    for f = {'seed', 'gamma'}
+        if isfield(rec, f{1}), rec = rmfield(rec, f{1}); end
+    end
     b  = double(unicode2native(jsonencode(rec), 'UTF-8'));
     h1 = 0; h2 = 0;
     M  = 2^31 - 1;                          % Mersenne prime modulus

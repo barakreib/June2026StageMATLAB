@@ -277,14 +277,21 @@ end
 
 function [blocks, opts] = local_jsonToExperiment(reg, txt)
     exp    = jsondecode(txt);
-    opts   = exp.opts;
-    raw    = local_asCell(exp.blocks);
+    opts   = getfielddef(exp, 'opts', struct());
+    raw    = local_asCell(getfielddef(exp, 'blocks', {}));
     blocks = local_emptyBlocks();
     for i = 1:numel(raw)
         r = raw{i};
+        if ~isfield(r, 'stim') || isempty(r.stim)
+            error('stimulusGUI:badExperiment', 'Experiment block %d has no "stim" field.', i);
+        end
         e = local_findEntry(reg, r.stim);
-        blocks(i) = struct('stimName', e.name, 'fnName', e.fn, 'params', r.params, ...
-                           'epochs', double(r.epochs), 'label', char(string(r.label)));
+        % Optional fields default via getfielddef, so a hand-edited/older JSON that omits
+        % params / epochs / label still loads instead of throwing a raw field error.
+        blocks(i) = struct('stimName', e.name, 'fnName', e.fn, ...
+                           'params', getfielddef(r, 'params', struct()), ...
+                           'epochs', double(getfielddef(r, 'epochs', 1)), ...
+                           'label',  char(string(getfielddef(r, 'label', ''))));
     end
 end
 
