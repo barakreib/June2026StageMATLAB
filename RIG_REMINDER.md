@@ -54,14 +54,13 @@ Clampex acq"** before Run. Then:
 ---
 
 ## §0 — Local dry run (no cell, no Clampex)   ☐
-**Fastest OpenGL-only isolation:** edit the flags at the top of **`debugStimulus.m`**
-(`Call_ClampEx = false`, `Call_OpenGL = true`, `Call_LED = false`) and run it — it presents
-ONE stimulus through the normal path with everything else switched off, and prints exactly
-what's on (`OpenGL=1 Clampex=0 LED=0 …`). Use this to troubleshoot presentation + DLP
-linearization without wondering what else is firing. The GUI route below does the same:
-1. ☐ Start the Stage server locally.
-2. ☐ `stimulusGUI` → pick **Greyscale full-field flicker** → **uncheck "Trigger Clampex
-   acq"** → **Run experiment**.
+Isolate the OpenGL/DLP path with the **Debug** checkbox in the GUI (just above Run): Run then
+presents the stimulus via the Stage host but sends no Clampex keystrokes and never opens the
+LED driver — so you can troubleshoot presentation + DLP linearization without wondering what
+else is firing.
+1. ☐ Start the Stage server (local machine, or the "Stage host" IP set in rig_config).
+2. ☐ `stimulusGUI` → pick **Greyscale full-field flicker** → add a block → tick **Debug** →
+   **Run experiment**.
 3. ☐ Expect: `[runExperiment] Stage server OK. Canvas: W x H`, the flicker presents, then
    `Experiment finished`. Confirm a `*_stim_manifest.jsonl` appeared in `pwd`.
 4. ☐ Repeat for a **Gaussian** stimulus (checks the seeded path + erfinv noise render).
