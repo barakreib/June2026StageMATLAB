@@ -1,19 +1,16 @@
 function host = stageHost()
-% stageHost  The Stage/OpenGL server address for client.connect(), from rig_config.json.
+% stageHost  The Stage/OpenGL server address that client.connect() uses.
 %
-%   host = stageHost()
+% The host is set in ONE place -- rig_config.json's "stage_host" -- which you change
+% either through the GUI "Stage host (IPv4)" field (it saves on Run) or by editing the
+% file. This function only READS it; do NOT hard-code an address here (that would
+% silently override the GUI/rig_config).
 %
-%   Returns the ``stage_host`` field of rig_config.json, or 'localhost' if it is unset,
-%   empty, or literally 'local'/'localhost'. The stimulus scripts and runExperiment call
-%   ``client.connect(stageHost())``:
-%     * stage_host = "localhost" (default) -> a plain local connection, identical to the
-%       old bare ``client.connect()``;
-%     * stage_host = "192.168.0.49" (an IPv4) -> connects to the Stage server on THAT
-%       computer.
+%   "stage_host": "192.168.0.51"        -> connect to the Stage server on THAT computer
+%   "stage_host": "localhost" (or "")   -> connect to a server on THIS machine
+%                                          (exactly what the old bare client.connect() did)
 %
-%   Set it ONCE in rig_config.json (or the GUI's "Stage host" field) instead of
-%   commenting/uncommenting the connect line in every stimulus. After editing the file by
-%   hand, run ``clear loadRigConfig`` (the GUI / setRigConfig do this for you).
+% After editing rig_config.json by hand, run:  clear loadRigConfig  (the GUI does this).
 
     host = strtrim(char(loadRigConfig('stage_host', 'localhost')));
     if isempty(host) || any(strcmpi(host, {'local', 'localhost'}))
