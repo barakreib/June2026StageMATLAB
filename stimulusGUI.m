@@ -22,16 +22,19 @@ function stimulusGUI(mode)
     local_checkRegistry(reg);
     blocks   = local_emptyBlocks();
     curEntry = reg(1);
-    expDir   = fullfile(fileparts(mfilename('fullpath')), 'experiments');
+    expDir    = fullfile(fileparts(mfilename('fullpath')), 'experiments');
     if ~exist(expDir, 'dir'), mkdir(expDir); end
+    stateFile = fullfile(prefdir, 'neitzStimulusGUI_lastSession.json');
     h = struct();
 
     buildUI();
     onSelectStim();
+    loadState();   % restore the last-used settings + protocol, if any
 
     % ================= nested callbacks (share reg / blocks / curEntry / h) =================
     function buildUI()
-        h.fig = uifigure('Name', 'Neitz Stimulus GUI', 'Position', [80 80 1020 900]);
+        h.fig = uifigure('Name', 'Neitz Stimulus GUI', 'Position', [80 80 1020 900], ...
+            'CloseRequestFcn', @(s,e) onClose());
         outer = uigridlayout(h.fig, [1 2]);
         outer.ColumnWidth = {250, '1x'};
 
@@ -43,7 +46,7 @@ function stimulusGUI(mode)
             'WordWrap', 'on', 'FontAngle', 'italic');
 
         rp = uigridlayout(outer, [11 1]);
-        rp.RowHeight = {24, '1x', 40, 20, '1x', 36, 152, 34, 36, 28, 40};
+        rp.RowHeight = {24, '1x', 40, 20, '1x', 36, 152, 34, 36, 30, 40};
 
         h.paramTitle = uilabel(rp, 'Text', 'Parameters', 'FontWeight', 'bold');
         h.paramTable = uitable(rp, 'ColumnName', {'Parameter', 'Value'}, ...
@@ -63,12 +66,10 @@ function stimulusGUI(mode)
             'ColumnWidth', {30, 240, 60, 120, '1x'}, 'RowName', {}, 'SelectionType', 'row');
 
         % ----- LEDs (NeitzLedRig): optional per-session RGB channel intensities -----
-        lh = uigridlayout(rp, [1 7]);
-        lh.ColumnWidth = {'fit', 'fit', 'fit', 150, 'fit', 170, '1x'};
+        lh = uigridlayout(rp, [1 6]);
+        lh.ColumnWidth = {'fit', 'fit', 150, 'fit', 170, '1x'};
         lh.Padding = [6 4 6 4]; lh.ColumnSpacing = 8;
         uilabel(lh, 'Text', 'LEDs:', 'FontWeight', 'bold');
-        h.ledEnable = uicheckbox(lh, 'Text', 'Enable', 'Value', false, ...
-            'Tooltip', 'Off = LEDs untouched (local tests). On = runExperiment opens NeitzLedRig and applies the grid below around the run.');
         uilabel(lh, 'Text', 'Mode');
         h.ledMode = uidropdown(lh, 'Items', {'off (0)', 'DC red (1)', 'video RGB (2)', 'video RGB + sync (3)'}, ...
             'ItemsData', [0 1 2 3], 'Value', 2);
@@ -99,10 +100,13 @@ function stimulusGUI(mode)
             'Tooltip', ['Uncheck for a local dry run: present OpenGL only, no Clampex trigger ' ...
                         '(e.g. Stage server on this machine, no rig). Leave checked at the rig.']);
 
-        h.debug = uicheckbox(rp, 'Value', false, 'ValueChangedFcn', @(s,e) onDebugToggle(), ...
-            'Text', 'Debug: present OpenGL only  (forces Clampex trigger + LED driver OFF for this Run)', ...
+        dr = uigridlayout(rp, [1 2]); dr.ColumnWidth = {200, '1x'}; dr.Padding = [6 2 6 2]; dr.ColumnSpacing = 24;
+        h.ledEnable = uicheckbox(dr, 'Text', 'Enable LED driver', 'Value', false, ...
+            'Tooltip', 'On: runExperiment opens NeitzLedRig and applies the LED grid above during the run. Off: LEDs left untouched.');
+        h.debug = uicheckbox(dr, 'Value', false, 'ValueChangedFcn', @(s,e) onDebugToggle(), ...
+            'Text', 'Debug: present OpenGL only  (forces Clampex trigger + LED driver OFF)', ...
             'FontWeight', 'bold', 'Tooltip', ...
-            'Run still presents via the Stage host, but sends no Clampex keystrokes and never opens the LED driver. Overrides the two checkboxes above.');
+            'Run still presents via the Stage host, but sends no Clampex keystrokes and never opens the LED driver. Overrides the Clampex + LED boxes.');
 
         bg = uigridlayout(rp, [1 5]); bg.ColumnWidth = {'1x', '1x', '1x', '1x', '1.4x'};
         bg.Padding = [6 4 6 4];
@@ -243,6 +247,50 @@ function stimulusGUI(mode)
         if h.debug.Value, state = 'off'; end   % grey out the boxes Debug overrides
         h.triggerAcq.Enable = state;
         h.ledEnable.Enable  = state;
+    end
+
+    % ----- remember the last-used session across GUI opens (in prefdir, not the repo) -----
+    function onClose()
+        saveState();
+        delete(h.fig);
+    end
+
+    function saveState()
+        try
+            o = struct('preStim', h.preStim.Value, 'postStim', h.postStim.Value, ...
+                       'itp', h.itp.Value, 'seedBase', round(h.seedBase.Value), ...
+                       'triggerAcq', logical(h.triggerAcq.Value), ...
+                       'debug', logical(h.debug.Value), 'stimIndex', h.list.ValueIndex);
+            o.leds = gatherLeds();
+            fid = fopen(stateFile, 'w');
+            if fid > 0
+                fwrite(fid, local_experimentToJson(blocks, o), 'char');
+                fclose(fid);
+            end
+        catch
+            % never block closing on a save error
+        end
+    end
+
+    function loadState()
+        if ~exist(stateFile, 'file'), return; end
+        try
+            [blk, o] = local_jsonToExperiment(reg, fileread(stateFile));
+        catch
+            return;   % ignore a corrupt / outdated state file
+        end
+        h.preStim.Value    = getfielddef(o, 'preStim', 2);
+        h.postStim.Value   = getfielddef(o, 'postStim', 1);
+        h.itp.Value        = getfielddef(o, 'itp', 3);
+        h.seedBase.Value   = getfielddef(o, 'seedBase', 2);
+        h.triggerAcq.Value = logical(getfielddef(o, 'triggerAcq', true));
+        h.debug.Value      = logical(getfielddef(o, 'debug', false));
+        applyLedsToUI(getfielddef(o, 'leds', struct()));
+        onDebugToggle();
+        si = round(getfielddef(o, 'stimIndex', 1));
+        if si >= 1 && si <= numel(reg), h.list.ValueIndex = si; onSelectStim(); end
+        blocks = blk;
+        refreshProtocol();
     end
 
     function leds = gatherLeds()
@@ -430,7 +478,8 @@ function selftest()
     blocks    = local_emptyBlocks();
     blocks(1) = struct('stimName', g.name, 'fnName', g.fn, 'params', ps, 'epochs', 5, 'label', 'grey gauss');
     blocks(2) = struct('stimName', j.name, 'fnName', j.fn, 'params', pj, 'epochs', 3, 'label', 'jit');
-    opts = struct('preStim', 2, 'postStim', 1, 'itp', 3, 'seedBase', 7);
+    opts = struct('preStim', 2, 'postStim', 1, 'itp', 3, 'seedBase', 7, ...
+                  'triggerAcq', false, 'debug', true, 'stimIndex', 3);
     opts.leds = struct('enabled', true, 'port', 'AUTO', 'mode', 2, ...
                        'intensity', [0.75 0 0; 0 0.5 0; 0 0 0; 0 0 0.125]);
     [b2, o2] = local_jsonToExperiment(reg, local_experimentToJson(blocks, opts));
@@ -441,7 +490,9 @@ function selftest()
     assert(o2.leds.enabled && o2.leds.mode == 2, 'json round-trip LED scalars');
     assert(isequal(size(o2.leds.intensity), [4, 3]) && abs(o2.leds.intensity(1, 1) - 0.75) < 1e-9, ...
         'json round-trip LED 4x3 grid');
-    fprintf('[selftest] LED config round-trips (enable + mode + 4x3 grid)\n');
+    assert(o2.debug == true && o2.stimIndex == 3 && o2.triggerAcq == false, ...
+        'session-state round-trip (debug / stimIndex / triggerAcq)');
+    fprintf('[selftest] LED config + session-state (debug/stimIndex/triggerAcq) round-trip\n');
 
     proto = local_buildProtocol(reg, blocks);
     assert(numel(proto) == 2 && proto(1).seedArg == 1 && proto(2).seedArg == 0, 'buildProtocol seedArg per block');
