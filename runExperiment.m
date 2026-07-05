@@ -63,7 +63,7 @@ function runExperiment(protocol, opts)
     if opts.preflight
         try
             c  = stage.core.network.StageClient();
-            c.connect();
+            c.connect(stageHost());
             cs = c.getCanvasSize();
             c.disconnect();
             fprintf('[runExperiment] Stage server OK. Canvas: %d x %d\n', cs(1), cs(2));

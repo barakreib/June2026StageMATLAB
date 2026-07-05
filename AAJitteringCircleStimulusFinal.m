@@ -33,7 +33,7 @@ function AAJitteringCircleStimulusFinal(rfCenter, rfRadius, circleRadius, walkSp
 
     % ---- HARD REQUIREMENT: client/server pipeline ----
     client = stage.core.network.StageClient();
-    client.connect();
+    client.connect(stageHost());
     canvasSize = client.getCanvasSize();
     fprintf('[AAJitteringCircle] Connected. Canvas: %d x %d\n', canvasSize(1), canvasSize(2));
 

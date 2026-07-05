@@ -32,7 +32,7 @@ function AASeededGaussianSConeIsoStimFinal2026(seed, mu, sigma, flickerHz, stimF
 
     % ---- HARD REQUIREMENT: client/server pipeline ----
     client = stage.core.network.StageClient();
-    client.connect();
+    client.connect(stageHost());
     canvasSize = client.getCanvasSize();
     fprintf('[AASeededGaussianSConeIsoStimFinal2026] Connected. Canvas: %d x %d\n', canvasSize(1), canvasSize(2));
 

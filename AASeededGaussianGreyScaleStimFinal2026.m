@@ -32,7 +32,7 @@ function AASeededGaussianGreyScaleStimFinal2026(seed, mu, sigma, flickerHz, stim
 
     % ---- HARD REQUIREMENT: client/server pipeline ----
     client = stage.core.network.StageClient();
-    client.connect();
+    client.connect(stageHost());
     canvasSize = client.getCanvasSize();
     fprintf('[AASeededGaussianGreyScaleStimFinal2026] Connected. Canvas: %d x %d\n', canvasSize(1), canvasSize(2));
 

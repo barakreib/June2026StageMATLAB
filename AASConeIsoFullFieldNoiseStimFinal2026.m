@@ -25,7 +25,7 @@ function AASConeIsoFullFieldNoiseStimFinal2026(flickerHz, stimFrames, refreshRat
 
     % ---- HARD REQUIREMENT: client/server pipeline ----
     client = stage.core.network.StageClient();
-    client.connect();
+    client.connect(stageHost());
     canvasSize = client.getCanvasSize();
     fprintf('[AASConeIsoFullFieldNoiseStimFinal2026] Connected. Canvas: %d x %d\n', canvasSize(1), canvasSize(2));
 

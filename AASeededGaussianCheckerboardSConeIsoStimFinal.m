@@ -34,7 +34,7 @@ function AASeededGaussianCheckerboardSConeIsoStimFinal(seed, mu, sigma, flickerH
 
     % ---- HARD REQUIREMENT: client/server pipeline ----
     client = stage.core.network.StageClient();
-    client.connect();
+    client.connect(stageHost());
     canvasSize = client.getCanvasSize();
     fprintf('[AASeededGaussianCheckerboardSConeIsoStimFinal] Connected. Canvas: %d x %d\n', canvasSize(1), canvasSize(2));
 

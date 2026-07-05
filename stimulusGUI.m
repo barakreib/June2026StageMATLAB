@@ -31,7 +31,7 @@ function stimulusGUI(mode)
 
     % ================= nested callbacks (share reg / blocks / curEntry / h) =================
     function buildUI()
-        h.fig = uifigure('Name', 'Neitz Stimulus GUI', 'Position', [80 80 1020 820]);
+        h.fig = uifigure('Name', 'Neitz Stimulus GUI', 'Position', [80 80 1020 860]);
         outer = uigridlayout(h.fig, [1 2]);
         outer.ColumnWidth = {250, '1x'};
 
@@ -42,8 +42,8 @@ function stimulusGUI(mode)
             'Add block, repeat to chain blocks, then Run.'], numel(reg)), ...
             'WordWrap', 'on', 'FontAngle', 'italic');
 
-        rp = uigridlayout(outer, [9 1]);
-        rp.RowHeight = {24, '1x', 40, 20, '1x', 36, 152, 36, 40};
+        rp = uigridlayout(outer, [10 1]);
+        rp.RowHeight = {24, '1x', 40, 20, '1x', 36, 152, 34, 36, 40};
 
         h.paramTitle = uilabel(rp, 'Text', 'Parameters', 'FontWeight', 'bold');
         h.paramTable = uitable(rp, 'ColumnName', {'Parameter', 'Value'}, ...
@@ -80,6 +80,14 @@ function stimulusGUI(mode)
             'ColumnName', {'R', 'G', 'B'}, 'RowName', {'LED 0', 'LED 1', 'LED 2', 'LED 3'}, ...
             'ColumnEditable', [true true true], 'ColumnWidth', {70, 70, 70}, ...
             'Tooltip', 'Per-LED intensity, 0..1 linear duty (pre-distort like lcGammaCorrect for eye-linear).');
+
+        % ----- Stage/OpenGL server host (blank = this machine; an IPv4 = remote) -----
+        sr = uigridlayout(rp, [1 3]); sr.ColumnWidth = {'fit', 200, '1x'}; sr.Padding = [6 3 6 3];
+        uilabel(sr, 'Text', 'Stage host (IPv4):');
+        h.stageHost = uieditfield(sr, 'text', 'Value', char(loadRigConfig('stage_host', 'localhost')), ...
+            'Tooltip', ['The Stage/OpenGL server computer. Blank / "localhost" = this machine; an ' ...
+                        'IPv4 (e.g. 192.168.0.49) connects to that computer. Saved to rig_config on Run.']);
+        uilabel(sr, 'Text', 'blank / localhost = this machine', 'FontAngle', 'italic', 'FontColor', [0.45 0.45 0.45]);
 
         og = uigridlayout(rp, [1 9]); og.ColumnWidth = {'fit', 58, 'fit', 58, 'fit', 58, 'fit', 58, '1x'};
         og.Padding = [6 3 6 3];
@@ -155,6 +163,17 @@ function stimulusGUI(mode)
     function onRun()
         if isempty(blocks)
             uialert(h.fig, 'Add at least one block first.', 'Nothing to run'); return;
+        end
+        % Persist the Stage host to rig_config (only if changed) so the stimulus scripts'
+        % client.connect(stageHost()) reaches it. blank/localhost = this machine.
+        hostNow = strtrim(char(h.stageHost.Value));
+        if ~strcmp(hostNow, strtrim(char(loadRigConfig('stage_host', 'localhost'))))
+            try
+                setRigConfig('stage_host', hostNow);
+            catch err
+                uialert(h.fig, ['Could not save Stage host to rig_config: ' err.message], 'rig_config');
+                return;
+            end
         end
         protocol = local_buildProtocol(reg, blocks);
         opts     = gatherOpts();

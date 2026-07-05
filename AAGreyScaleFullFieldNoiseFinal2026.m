@@ -26,7 +26,7 @@ function AAGreyScaleFullFieldNoiseFinal2026(flickerHz, stimFrames, refreshRate)
 
     % ---- HARD REQUIREMENT: client/server pipeline ----
     client = stage.core.network.StageClient();
-    client.connect();
+    client.connect(stageHost());
     canvasSize = client.getCanvasSize();
     fprintf('[AAGreyScaleFullFieldNoiseFinal2026] Connected. Canvas: %d x %d\n', canvasSize(1), canvasSize(2));
 

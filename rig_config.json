@@ -3,6 +3,7 @@
   "projector": "TI LightCrafter 4500",
   "projector_mode": "Video",
   "refresh_rate_hz": 60,
+  "stage_host": "localhost",
 
   "gamma": 2.2056,
   "gamma_model": "power",
