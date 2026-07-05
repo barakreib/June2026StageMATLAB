@@ -146,10 +146,10 @@ function AASeededGaussianCheckerboardSConeIsoStimFinal(seed, mu, sigma, flickerH
 
     % ---- Controllers (pure anonymous functions - NO subfunctions) ----
     imageCtrl = PropertyController(checkerboard, 'imageMatrix', ...
-        @(s) allFrameImages{min(max(floor(s.time * refreshRate) + 1, 1), totalFrames)});
+        @(s) allFrameImages{min(max(s.frame + 1, 1), totalFrames)});
 
     rightBarCtrl = PropertyController(rightBar, 'color', ...
-        @(s) rightBarColors(min(max(floor(s.time * refreshRate) + 1, 1), totalFrames), :));
+        @(s) rightBarColors(min(max(s.frame + 1, 1), totalFrames), :));
 
     % ---- Presentation + player ----
     presentation = Presentation(totalDuration);

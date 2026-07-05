@@ -135,11 +135,11 @@ function AAJitteringCircleStimulusFinal(rfCenter, rfRadius, circleRadius, walkSp
 
     % ---- Controllers ----
     posCtrl = PropertyController(circle, 'position', ...
-        @(s) [posX(min(max(floor(s.time * refreshRate) + 1, 1), totalFrames)), ...
-              posY(min(max(floor(s.time * refreshRate) + 1, 1), totalFrames))]);
+        @(s) [posX(min(max(s.frame + 1, 1), totalFrames)), ...
+              posY(min(max(s.frame + 1, 1), totalFrames))]);
 
     rightBarCtrl = PropertyController(rightBar, 'color', ...
-        @(s) rightBarColors(min(max(floor(s.time * refreshRate) + 1, 1), totalFrames), :));
+        @(s) rightBarColors(min(max(s.frame + 1, 1), totalFrames), :));
 
     % ---- Log this trial to the per-day session manifest (paired to .abf by order) ----
     % Walk is an OU process; seed 2 + these params + the inverse-CDF draw order let

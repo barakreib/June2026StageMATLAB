@@ -87,10 +87,10 @@ function AAGreyScaleFullFieldNoiseFinal2026(flickerHz, stimFrames, refreshRate)
 
     % ---- Controllers (pure anonymous functions - no subfunctions) ----
     fullFieldCtrl = PropertyController(fullField, 'color', ...
-        @(s) fullFieldColors(min(max(floor(s.time * refreshRate) + 1, 1), totalFrames), :));
+        @(s) fullFieldColors(min(max(s.frame + 1, 1), totalFrames), :));
 
     rightBarCtrl = PropertyController(rightBar, 'color', ...
-        @(s) rightBarColors(min(max(floor(s.time * refreshRate) + 1, 1), totalFrames), :));
+        @(s) rightBarColors(min(max(s.frame + 1, 1), totalFrames), :));
 
     % ---- Log this trial to the per-day session manifest (paired to .abf by order) ----
     record = struct( ...
