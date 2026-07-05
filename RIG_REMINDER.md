@@ -54,10 +54,10 @@ Clampex acq"** before Run. Then:
 ---
 
 ## §0 — Local dry run (no cell, no Clampex)   ☐
-Isolate the OpenGL/DLP path with the **Debug** checkbox in the GUI (just above Run): Run then
-presents the stimulus via the Stage host but sends no Clampex keystrokes and never opens the
-LED driver — so you can troubleshoot presentation + DLP linearization without wondering what
-else is firing.
+Isolate the acquisition with the **Debug** checkbox in the GUI (just above Run): Run then
+presents the stimulus via the Stage host but sends no Clampex keystrokes — so you can
+troubleshoot presentation + DLP linearization without acquisition. The **LED driver is
+independent** of Debug: tick "Enable LED driver" if you want it running while you debug.
 1. ☐ Start the Stage server (local machine, or the "Stage host" IP set in rig_config).
 2. ☐ `stimulusGUI` → pick **Greyscale full-field flicker** → add a block → tick **Debug** →
    **Run experiment**.

@@ -104,9 +104,9 @@ function stimulusGUI(mode)
         h.ledEnable = uicheckbox(dr, 'Text', 'Enable LED driver', 'Value', false, ...
             'Tooltip', 'On: runExperiment opens NeitzLedRig and applies the LED grid above during the run. Off: LEDs left untouched.');
         h.debug = uicheckbox(dr, 'Value', false, 'ValueChangedFcn', @(s,e) onDebugToggle(), ...
-            'Text', 'Debug: present OpenGL only  (forces Clampex trigger + LED driver OFF)', ...
+            'Text', 'Debug: no Clampex acquisition  (LED driver still available)', ...
             'FontWeight', 'bold', 'Tooltip', ...
-            'Run still presents via the Stage host, but sends no Clampex keystrokes and never opens the LED driver. Overrides the Clampex + LED boxes.');
+            'Run still presents via the Stage host but sends no Clampex keystrokes. The LED driver is INDEPENDENT -- tick "Enable LED driver" to run it while debugging.');
 
         bg = uigridlayout(rp, [1 5]); bg.ColumnWidth = {'1x', '1x', '1x', '1x', '1.4x'};
         bg.Padding = [6 4 6 4];
@@ -236,17 +236,15 @@ function stimulusGUI(mode)
                    'itp', h.itp.Value, 'seedBase', round(h.seedBase.Value), ...
                    'triggerAcq', logical(h.triggerAcq.Value));
         o.leds = gatherLeds();
-        if h.debug.Value                 % Debug: OpenGL only -> force Clampex trigger + LED off
-            o.triggerAcq   = false;
-            o.leds.enabled = false;
+        if h.debug.Value                 % Debug: skip Clampex acquisition only
+            o.triggerAcq = false;        % (LED driver stays as set by the 'Enable LED driver' box)
         end
     end
 
     function onDebugToggle()
         state = 'on';
-        if h.debug.Value, state = 'off'; end   % grey out the boxes Debug overrides
-        h.triggerAcq.Enable = state;
-        h.ledEnable.Enable  = state;
+        if h.debug.Value, state = 'off'; end   % Debug greys out ONLY the Clampex trigger
+        h.triggerAcq.Enable = state;           % (the LED driver stays under user control)
     end
 
     % ----- remember the last-used session across GUI opens (in prefdir, not the repo) -----
