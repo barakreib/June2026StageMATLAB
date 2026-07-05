@@ -9,8 +9,9 @@ function outPath = writeStimManifest(outDir, record)
 %   with the Clampex .abf recorded for that trial BY ORDER (and refuses to pair when the
 %   row and recording counts disagree), then regenerates the exact stimulus noise from
 %   record.seed via reproduce_noise -- so NO per-frame stimulus values need to be stored
-%   or shipped. (The `timestamp` below is recorded for provenance; using it as an order
-%   cross-check is a future hardening -- see the suite's apply_session_manifest.)
+%   or shipped. (The `timestamp` below is also an order cross-check: the suite's
+%   apply_session_manifest compares each row's time to the paired .abf's recorded time,
+%   catching an equal-count-but-shifted pairing, not just a count mismatch.)
 %
 %   `record` is a struct of metadata: seed, mu, sigma, checks_x, checks_y,
 %   n_updates, update_every_n_frames, refresh_rate_hz, stim_frames, gamma,

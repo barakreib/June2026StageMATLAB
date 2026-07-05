@@ -68,8 +68,10 @@ Only the real rig can prove these:
 3. **Manifest ↔ .abf alignment** — run a session; confirm the manifest has exactly one
    row per Clampex `.abf`, in the same order; import into the suite and confirm each
    recording auto-tags with the correct stimulus (and repeats collapse to "N epochs"). The
-   suite now **refuses to import** on a row ≠ recording count mismatch (rather than
-   silently mis-pairing) — verify a deliberately short/long manifest triggers that error.
+   suite now **refuses to import** on a row ≠ recording count mismatch, and **cross-checks
+   each row's `timestamp` against the paired `.abf`'s recorded time** — verify a
+   deliberately short/long *or reordered* manifest triggers a refusal instead of a silent
+   mislabel.
 4. **Acquisition** — confirm the SendKeys trigger still starts/stops each epoch's
    recording (unchanged code, but re-verify after any Clampex/Windows environment change).
 
@@ -77,7 +79,9 @@ Only the real rig can prove these:
 - γ has ONE source (`rig_config.json`); recalibrate via `calibrateGamma('write', true)`
   and both `lcGammaCorrect` and the manifest pick it up.
 - The `.abf` ↔ manifest pairing is **by order** — a missed/aborted trial can desync it.
-  Two guards now exist: `runExperiment` **aborts on a failed epoch**, and the analysis
-  `apply_session_manifest` **raises on a row ≠ recording count mismatch** instead of
-  mis-pairing. (Deterministic pairing via capturing the `.abf` filename is still a deferred
-  roadmap item — equal-but-misordered counts would slip past a pure count-check.)
+  Three guards now exist: `runExperiment` **aborts on a failed epoch**; the analysis
+  `apply_session_manifest` **raises on a row ≠ recording count mismatch**; and it also
+  **cross-checks each row's `timestamp` against the paired `.abf`'s recorded time**, so an
+  equal-count-but-shifted pairing is refused too (a rare *perfectly uniform* slide, which
+  keeps the offset constant, can still slip through). Fully deterministic pairing via
+  capturing the `.abf` filename remains the deferred roadmap item that closes it entirely.
