@@ -20,13 +20,19 @@ function AAGreyScaleFullFieldNoiseFinal2026(flickerHz, stimFrames, refreshRate)
 % Stage client/server serialization compatibility.
 
     % ---- Defaults (allow standalone execution with no arguments) ----
-    if nargin < 3 || isempty(refreshRate), refreshRate = 60;              end
-    if nargin < 1 || isempty(flickerHz),   flickerHz   = 4;               end
-    if nargin < 2 || isempty(stimFrames),  stimFrames  = 10 * refreshRate; end
+    if nargin < 3 || isempty(refreshRate)
+        refreshRate = 60;
+    end
+    if nargin < 1 || isempty(flickerHz)
+        flickerHz = 1;
+    end
+    if nargin < 2 || isempty(stimFrames)
+        stimFrames = 10 * refreshRate;
+    end
 
     % ---- HARD REQUIREMENT: client/server pipeline ----
     client = stage.core.network.StageClient();
-    client.connect();
+    client.connect('192.168.1.131');
     canvasSize = client.getCanvasSize();
     fprintf('[AAGreyScaleFullFieldNoiseFinal2026] Connected. Canvas: %d x %d\n', canvasSize(1), canvasSize(2));
 
@@ -62,9 +68,9 @@ function AAGreyScaleFullFieldNoiseFinal2026(flickerHz, stimFrames, refreshRate)
 
         % Right bar: blue/black at stimulus flicker rate (sync signal)
         if mod(halfCycleIdx, 2) == 0
-            rightBarColors(f, :) = [0 0 1];
-        else
             rightBarColors(f, :) = [0 0 0];
+        else
+            rightBarColors(f, :) = [0 0 1];
         end
     end
 
@@ -97,4 +103,6 @@ function AAGreyScaleFullFieldNoiseFinal2026(flickerHz, stimFrames, refreshRate)
     fprintf('[AAGreyScaleFullFieldNoiseFinal2026] Playing presentation (%.1f sec)...\n', totalDuration);
     client.play(player);
     fprintf('[AAGreyScaleFullFieldNoiseFinal2026] Done.\n');
-end
+    
+    end
+    

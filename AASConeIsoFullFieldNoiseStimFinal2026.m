@@ -19,13 +19,19 @@ function AASConeIsoFullFieldNoiseStimFinal2026(flickerHz, stimFrames, refreshRat
 % precomputed lookup tables - no local subfunctions.
 
     % ---- Defaults (allow standalone execution with no arguments) ----
-    if nargin < 3 || isempty(refreshRate), refreshRate = 60;              end
-    if nargin < 1 || isempty(flickerHz),   flickerHz   = 4;               end
-    if nargin < 2 || isempty(stimFrames),  stimFrames  = 10 * refreshRate; end
+    if nargin < 3 || isempty(refreshRate)
+        refreshRate = 60;
+    end
+    if nargin < 1 || isempty(flickerHz)
+        flickerHz = 2;
+    end
+    if nargin < 2 || isempty(stimFrames)
+        stimFrames = 10 * refreshRate;
+    end
 
     % ---- HARD REQUIREMENT: client/server pipeline ----
     client = stage.core.network.StageClient();
-    client.connect();
+    client.connect('192.168.1.131');
     canvasSize = client.getCanvasSize();
     fprintf('[AASConeIsoFullFieldNoiseStimFinal2026] Connected. Canvas: %d x %d\n', canvasSize(1), canvasSize(2));
 
@@ -60,9 +66,9 @@ function AASConeIsoFullFieldNoiseStimFinal2026(flickerHz, stimFrames, refreshRat
 
         % Right bar: blue/black at stimulus flicker rate (sync signal)
         if mod(halfCycleIdx, 2) == 0
-            rightBarColors(f, :) = [0 0 1];
-        else
             rightBarColors(f, :) = [0 0 0];
+        else
+            rightBarColors(f, :) = [0 0 1];
         end
     end
 

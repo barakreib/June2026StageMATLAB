@@ -23,16 +23,28 @@ function AASeededGaussianGreyScaleStimFinal2026(seed, mu, sigma, flickerHz, stim
 % tables for Stage serialization compatibility.
 
     % ---- Defaults (allow standalone execution with no arguments) ----
-    if nargin < 6 || isempty(refreshRate), refreshRate = 60;              end
-    if nargin < 1 || isempty(seed),        seed        = 2;               end
-    if nargin < 2 || isempty(mu),          mu          = 0.5;             end
-    if nargin < 3 || isempty(sigma),       sigma       = 0.3;             end
-    if nargin < 4 || isempty(flickerHz),   flickerHz   = 4;               end
-    if nargin < 5 || isempty(stimFrames),  stimFrames  = 10 * refreshRate; end
+    if nargin < 6 || isempty(refreshRate)
+        refreshRate = 60;
+    end
+    if nargin < 1 || isempty(seed)
+        seed = 2;
+    end
+    if nargin < 2 || isempty(mu)
+        mu = 0.5;
+    end
+    if nargin < 3 || isempty(sigma)
+        sigma = 0.3;
+    end
+    if nargin < 4 || isempty(flickerHz)
+        flickerHz = 4;
+    end
+    if nargin < 5 || isempty(stimFrames)
+        stimFrames = 10 * refreshRate;
+    end
 
     % ---- HARD REQUIREMENT: client/server pipeline ----
     client = stage.core.network.StageClient();
-    client.connect();
+    client.connect('192.168.1.131');
     canvasSize = client.getCanvasSize();
     fprintf('[AASeededGaussianGreyScaleStimFinal2026] Connected. Canvas: %d x %d\n', canvasSize(1), canvasSize(2));
 

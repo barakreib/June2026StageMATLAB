@@ -9,14 +9,14 @@
 stim_dur    = 10;       % stimulus duration (seconds)
 pre_stim    = 2;        % pre-stimulus window (seconds)
 itp         = 3;        % inter-trial pause (seconds)
-nTrials     = 5;        % number of trials
+nTrials     = 3;        % number of trials
 refreshRate = 60;       % monitor refresh rate (Hz) - always 60
 
 % Derived timing
 stimFrames = stim_dur * refreshRate;   % total stimulus frames
 
 % Stimulus flicker rate (how fast the stimulus content changes)
-flickerHz = 4;          % stimulus update frequency (Hz)
+flickerHz = 2;          % stimulus update frequency (Hz)
 
 
 %% ===== TRIAL LOOP =====
@@ -34,7 +34,7 @@ for ind = 1:nTrials
     pause(pre_stim); % pre-stimulus window
 
     % ===== UNCOMMENT ONE STIMULUS =====
-    AAGreyScaleFullFieldNoiseFinal2026(flickerHz, stimFrames, refreshRate);
+  AAGreyScaleFullFieldNoiseFinal2026(flickerHz, stimFrames, refreshRate);
 %   AASConeIsoFullFieldNoiseStimFinal2026(flickerHz, stimFrames, refreshRate);
 %   AASeededGaussianGreyScaleStimFinal2026([], [], [], flickerHz, stimFrames, refreshRate);
 %   AASeededGaussianSConeIsoStimFinal2026([], [], [], flickerHz, stimFrames, refreshRate);
