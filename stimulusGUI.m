@@ -27,6 +27,7 @@ function stimulusGUI(mode)
     if ~exist(expDir, 'dir'), mkdir(expDir); end
     stateFile = fullfile(prefdir, 'neitzStimulusGUI_lastSession.json');
     h = struct();
+    rigConn = [];   % handle to the SHARED rig (same object as base-workspace `rig`; see quickRig)
 
     buildUI();
     onSelectStim();
@@ -67,25 +68,34 @@ function stimulusGUI(mode)
             'ColumnWidth', {30, 240, 60, 120, '1x'}, 'RowName', {}, 'SelectionType', 'row');
 
         % ----- LEDs (NeitzLedRig): three phase groups; a preset fills the SELECTED one -----
-        lh = uigridlayout(rp, [1 8]);
-        lh.ColumnWidth = {'fit', 'fit', 130, 'fit', 110, 'fit', 200, '1x'};
+        lh = uigridlayout(rp, [1 10]);
+        lh.ColumnWidth = {'fit', 'fit', 130, 'fit', 110, 'fit', 184, 'fit', 'fit', '1x'};
         lh.Padding = [6 4 6 4]; lh.ColumnSpacing = 8;
         uilabel(lh, 'Text', 'LEDs:', 'FontWeight', 'bold');
         uilabel(lh, 'Text', 'Mode');
         h.ledMode = uidropdown(lh, 'Items', {'off (0)', 'DC red (1)', 'video RGB (2)', 'video RGB + sync (3)'}, ...
             'ItemsData', [0 1 2 3], 'Value', 2);
         uilabel(lh, 'Text', 'Port');
-        h.ledPort = uieditfield(lh, 'text', 'Value', 'AUTO', ...
-            'Tooltip', 'AUTO auto-detects the FPGA; or a COM name (Windows 11) / /dev/cu.* node (macOS).');
+        h.ledPort = uieditfield(lh, 'text', 'Value', char(loadRigConfig('led_port', 'COM3')), ...
+            'Tooltip', ['LED-driver port (default: rig_config led_port -- hard-coded is fastest). ' ...
+                        'Type AUTO to probe for the FPGA instead (slower), or a /dev/cu.* node on macOS.']);
         uilabel(lh, 'Text', 'Preset');
         h.ledPreset = uidropdown(lh, 'Items', local_presetNames(presets), 'ValueChangedFcn', @(s,e) onPreset(), ...
             'Tooltip', 'Fill the SELECTED group (During / Between / End, chosen below) with a 12-value preset from rig_config.json.');
+        h.ledSetNow = uibutton(lh, 'Text', 'Set now', 'ButtonPushedFcn', @(s,e) onLedSetNow(), ...
+            'Tooltip', ['Quick set: push the SELECTED grid (During / Between / End) and Mode to the rig ' ...
+                        'immediately, without running an experiment -- for LED changes between runs.']);
+        h.ledOffNow = uibutton(lh, 'Text', 'Off now', 'ButtonPushedFcn', @(s,e) onLedOffNow(), ...
+            'Tooltip', 'Quick set: mode 0 (all LEDs dark) immediately. Grid values are kept.');
 
         % selector row: the checkbox headers pick which group a preset fills (radio behavior)
-        sel = uigridlayout(rp, [1 3]); sel.Padding = [44 2 6 2]; sel.ColumnSpacing = 20;
+        sel = uigridlayout(rp, [1 4]); sel.Padding = [44 2 6 2]; sel.ColumnSpacing = 20;
+        sel.ColumnWidth = {'fit', 'fit', 'fit', '1x'};
         h.grpDuring  = uicheckbox(sel, 'Text', 'During epochs',   'Value', true,  'FontWeight', 'bold', 'ValueChangedFcn', @(s,e) onGroupSelect('during'));
         h.grpBetween = uicheckbox(sel, 'Text', 'Between epochs',  'Value', false, 'FontWeight', 'bold', 'ValueChangedFcn', @(s,e) onGroupSelect('between'));
         h.grpEnd     = uicheckbox(sel, 'Text', 'End of stimulus', 'Value', false, 'FontWeight', 'bold', 'ValueChangedFcn', @(s,e) onGroupSelect('end'));
+        h.ledStatus  = uilabel(sel, 'Text', '', 'FontAngle', 'italic', ...
+            'FontColor', [0.45 0.45 0.45], 'HorizontalAlignment', 'right');
 
         % three 4x3 intensity grids (LED 0..3 x R/G/B), one per phase
         tg = uigridlayout(rp, [1 3]); tg.Padding = [6 0 6 0]; tg.ColumnSpacing = 20;
@@ -101,23 +111,23 @@ function stimulusGUI(mode)
                         'IPv4 (e.g. 192.168.0.49) connects to that computer. Saved to rig_config on Run.']);
         uilabel(sr, 'Text', 'blank / localhost = this machine', 'FontAngle', 'italic', 'FontColor', [0.45 0.45 0.45]);
 
-        og = uigridlayout(rp, [1 9]); og.ColumnWidth = {'fit', 58, 'fit', 58, 'fit', 58, 'fit', 58, '1x'};
+        og = uigridlayout(rp, [1 8]); og.ColumnWidth = {'fit', 58, 'fit', 58, 'fit', 58, 'fit', 58};
         og.Padding = [6 3 6 3];
         uilabel(og, 'Text', 'preStim (s)');  h.preStim  = uieditfield(og, 'numeric', 'Value', 2, 'Limits', [0 Inf]);
         uilabel(og, 'Text', 'postStim (s)'); h.postStim = uieditfield(og, 'numeric', 'Value', 1, 'Limits', [0 Inf]);
         uilabel(og, 'Text', 'itp (s)');      h.itp      = uieditfield(og, 'numeric', 'Value', 3, 'Limits', [0 Inf]);
         uilabel(og, 'Text', 'seedBase');     h.seedBase = uieditfield(og, 'numeric', 'Value', 2, 'Limits', [0 Inf], 'RoundFractionalValues', 'on');
-        h.triggerAcq = uicheckbox(og, 'Text', 'Trigger Clampex acq', 'Value', true, ...
-            'Tooltip', ['Uncheck for a local dry run: present OpenGL only, no Clampex trigger ' ...
-                        '(e.g. Stage server on this machine, no rig). Leave checked at the rig.']);
 
-        dr = uigridlayout(rp, [1 2]); dr.ColumnWidth = {200, '1x'}; dr.Padding = [6 2 6 2]; dr.ColumnSpacing = 24;
-        h.ledEnable = uicheckbox(dr, 'Text', 'Enable LED driver', 'Value', false, ...
-            'Tooltip', 'On: runExperiment opens NeitzLedRig and applies the LED grid above during the run. Off: LEDs left untouched.');
-        h.debug = uicheckbox(dr, 'Value', false, 'ValueChangedFcn', @(s,e) onDebugToggle(), ...
-            'Text', 'Debug: no Clampex acquisition  (LED driver still available)', ...
-            'FontWeight', 'bold', 'Tooltip', ...
-            'Run still presents via the Stage host but sends no Clampex keystrokes. The LED driver is INDEPENDENT -- tick "Enable LED driver" to run it while debugging.');
+        % Two independent enables, ON by default. Unchecking one makes Run skip
+        % exactly those lines: Clampex off -> no acquisition trigger; LED driver
+        % off -> runExperiment never opens NeitzLedRig (LEDs left untouched).
+        dr = uigridlayout(rp, [1 3]); dr.ColumnWidth = {230, 210, '1x'}; dr.Padding = [6 2 6 2]; dr.ColumnSpacing = 24;
+        h.triggerAcq = uicheckbox(dr, 'Text', 'Clampex acquisition', 'Value', true, 'FontWeight', 'bold', ...
+            'Tooltip', ['ON: Run triggers Clampex acquisition each epoch. OFF: present via the Stage ' ...
+                        'host only, no Clampex keystrokes (local dry run / no rig).']);
+        h.ledEnable = uicheckbox(dr, 'Text', 'LED driver', 'Value', true, 'FontWeight', 'bold', ...
+            'Tooltip', ['ON: Run opens NeitzLedRig and applies the LED grids during the session. ' ...
+                        'OFF: the LED driver is not touched by Run.']);
 
         bg = uigridlayout(rp, [1 5]); bg.ColumnWidth = {'1x', '1x', '1x', '1x', '1.4x'};
         bg.Padding = [6 4 6 4];
@@ -197,6 +207,12 @@ function stimulusGUI(mode)
         end
         protocol = local_buildProtocol(reg, blocks);
         opts     = gatherOpts();
+        if opts.leds.enabled
+            % runExperiment opens its OWN NeitzLedRig; free the quick-set connection first
+            % or that open fails with "port in use". (LED driver not enabled: keep ours, so
+            % quick-set values persist untouched through the run.)
+            releaseQuickRig();
+        end
         try
             runExperiment(protocol, opts);
             uialert(h.fig, sprintf('Experiment finished (%d block(s)).', numel(blocks)), 'Done', 'Icon', 'success');
@@ -243,24 +259,20 @@ function stimulusGUI(mode)
     end
 
     function o = gatherOpts()
+        % The two checkboxes map straight through: triggerAcq -> Clampex acquisition,
+        % o.leds.enabled -> LED driver (set in gatherLeds). Unchecked = Run skips it.
         o = struct('preStim', h.preStim.Value, 'postStim', h.postStim.Value, ...
                    'itp', h.itp.Value, 'seedBase', round(h.seedBase.Value), ...
                    'triggerAcq', logical(h.triggerAcq.Value));
         o.leds = gatherLeds();
-        if h.debug.Value                 % Debug: skip Clampex acquisition only
-            o.triggerAcq = false;        % (LED driver stays as set by the 'Enable LED driver' box)
-        end
-    end
-
-    function onDebugToggle()
-        state = 'on';
-        if h.debug.Value, state = 'off'; end   % Debug greys out ONLY the Clampex trigger
-        h.triggerAcq.Enable = state;           % (the LED driver stays under user control)
     end
 
     % ----- remember the last-used session across GUI opens (in prefdir, not the repo) -----
     function onClose()
         saveState();
+        % The shared `rig` stays CONNECTED across GUI closes (it lives on in the
+        % base workspace) -- scripts and the prompt keep using it without a
+        % reconnect. `clear rig` at the prompt darkens + closes it when done.
         delete(h.fig);
     end
 
@@ -269,7 +281,7 @@ function stimulusGUI(mode)
             o = struct('preStim', h.preStim.Value, 'postStim', h.postStim.Value, ...
                        'itp', h.itp.Value, 'seedBase', round(h.seedBase.Value), ...
                        'triggerAcq', logical(h.triggerAcq.Value), ...
-                       'debug', logical(h.debug.Value), 'stimIndex', h.list.ValueIndex);
+                       'stimIndex', h.list.ValueIndex);
             o.leds = gatherLeds();
             fid = fopen(stateFile, 'w');
             if fid > 0
@@ -293,9 +305,7 @@ function stimulusGUI(mode)
         h.itp.Value        = getfielddef(o, 'itp', 3);
         h.seedBase.Value   = getfielddef(o, 'seedBase', 2);
         h.triggerAcq.Value = logical(getfielddef(o, 'triggerAcq', true));
-        h.debug.Value      = logical(getfielddef(o, 'debug', false));
         applyLedsToUI(getfielddef(o, 'leds', struct()));
-        onDebugToggle();
         si = round(getfielddef(o, 'stimIndex', 1));
         if si >= 1 && si <= numel(reg), h.list.ValueIndex = si; onSelectStim(); end
         blocks = blk;
@@ -336,14 +346,140 @@ function stimulusGUI(mode)
 
     function applyLedsToUI(L)
         if ~isstruct(L), return; end
-        h.ledEnable.Value = logical(getfielddef(L, 'enabled', false));
-        h.ledPort.Value   = char(getfielddef(L, 'port', 'AUTO'));
+        h.ledEnable.Value = logical(getfielddef(L, 'enabled', true));   % LED driver ON by default
+        p = char(getfielddef(L, 'port', ''));
+        if isempty(p) || strcmpi(p, 'AUTO')   % legacy saved sessions: snap to the fast
+            p = char(loadRigConfig('led_port', 'COM3'));   % configured port (type AUTO
+        end                                                % in the field to re-probe)
+        h.ledPort.Value = p;
         m = double(getfielddef(L, 'mode', 2));
         if ismember(m, [0 1 2 3]), h.ledMode.Value = m; end
         dflt = local_coerce43(getfielddef(L, 'intensity', zeros(4, 3)));   % older single-grid files
         h.ledDuring.Data  = local_coerce43(getfielddef(L, 'during_epochs', dflt));
         h.ledBetween.Data = local_coerce43(getfielddef(L, 'between_epochs', zeros(4, 3)));
         h.ledEnd.Data     = local_coerce43(getfielddef(L, 'end_of_stimulus', zeros(4, 3)));
+    end
+
+    % ----- LED quick-set: drive the rig NOW, between OpenGL runs (no experiment) -----
+    function r = quickRig()
+        % ONE shared rig per MATLAB session: reuse the GUI's live handle, else
+        % ADOPT a connected `rig` from the base workspace (e.g. left by demoLedRig
+        % or the prompt), else connect and PUBLISH the new rig to the base
+        % workspace as `rig`. GUI, scripts and prompt share one open COM port --
+        % no delete-and-rebuild, no reconnect cost, no "port in use" fights.
+        if ~isempty(rigConn) && isvalid(rigConn) && rigConn.isConnected()
+            r = rigConn; return;
+        end
+        rigConn = [];
+        try
+            wr = evalin('base', 'rig');
+            if isa(wr, 'NeitzLedRig') && isvalid(wr) && wr.isConnected()
+                rigConn = wr;
+                r = rigConn;
+                return;
+            end
+        catch
+            % no usable `rig` in the base workspace -- connect below
+        end
+        if exist('NeitzLedRig', 'class') ~= 8   % same path shim as runExperiment
+            addpath(fullfile(fileparts(mfilename('fullpath')), 'ml-uled'));
+        end
+        setLedStatus('Connecting to the LED driver...', [0.45 0.45 0.45]);
+        rigConn = NeitzLedRig(strtrim(char(h.ledPort.Value)));   % 'AUTO' = probe
+        assignin('base', 'rig', rigConn);   % publish: scripts + prompt reuse this rig
+        r = rigConn;
+    end
+
+    function releaseQuickRig()
+        % Fully release the shared COM pathway (used before an LED-enabled Run,
+        % which opens its OWN connection). Deleting darkens (mode 0) + closes.
+        if ~isempty(rigConn)
+            try
+                delete(rigConn);
+            catch
+            end
+            rigConn = [];
+        end
+        try   % the same handle may live on as base `rig` -- remove that alias too
+            evalin('base', ...
+                'if exist(''rig'',''var'') && isa(rig,''NeitzLedRig''), delete(rig); clear(''rig''); end');
+        catch
+        end
+    end
+
+    function onLedSetNow()
+        try
+            r    = quickRig();
+            vals = local_coerce43(selectedLedTable().Data);
+            ok   = r.setMode(0);               % dark while the registers load (as runExperiment)
+            cols = {'r', 'g', 'b'};
+            for li = 1:4
+                for ci = 1:3
+                    ok = r.setIntensity(li - 1, cols{ci}, vals(li, ci)) && ok;
+                end
+            end
+            md = h.ledMode.Value;
+            ok = r.setMode(md) && ok;
+            if h.grpBetween.Value,  grp = 'Between';
+            elseif h.grpEnd.Value,  grp = 'End';
+            else,                   grp = 'During';
+            end
+            if ~ok
+                setLedStatus('Sent, but not every write was ACKed -- check the rig.', [0.85 0.45 0.10]);
+                return;
+            end
+            % Modes 2/3 are colour-field video: the LEDs stay DARK until the projector
+            % (or setTtlDebug) drives i_RGB. Say so, so a "nothing lit" isn't mistaken
+            % for a failure. Mode 1 (DC red) lights immediately from the grid's R column.
+            if md == 2 || md == 3
+                setLedStatus(sprintf(['Set: %s grid, mode %d (video) on %s -- LEDs light only while ' ...
+                    'the projector drives i_RGB. Use mode 1 (DC red) to see them now.'], ...
+                    grp, md, char(r.Port)), [0.20 0.40 0.55]);
+            else
+                setLedStatus(sprintf('LEDs set now: %s grid, mode %d, on %s.', ...
+                    grp, md, char(r.Port)), [0.13 0.45 0.20]);
+            end
+        catch err
+            onLedError(err);
+        end
+    end
+
+    function onLedOffNow()
+        try
+            r = quickRig();
+            if r.setMode(0)
+                setLedStatus(sprintf('LEDs OFF (mode 0) on %s. Grid values kept.', char(r.Port)), [0.13 0.45 0.20]);
+            else
+                setLedStatus('Mode-0 write was not ACKed -- check the rig.', [0.85 0.45 0.10]);
+            end
+        catch err
+            onLedError(err);
+        end
+    end
+
+    function onLedError(err)
+        % Loud, actionable failure feedback -- a popup (not just the small status
+        % label) so a failed quick-set can't be mistaken for "nothing happened".
+        releaseQuickRig();   % drop any half-open handle so the next click retries clean
+        msg  = err.message;
+        port = strtrim(char(h.ledPort.Value));
+        low  = lower(msg);
+        if contains(low, 'denied') || contains(low, 'in use') || contains(low, 'busy') || contains(low, 'portbusy')
+            msg = sprintf(['%s is busy -- another program already holds it. Close the C# uLED GUI, ' ...
+                'or run "clear rig" at the MATLAB prompt if a script left one open, then click again.'], port);
+        elseif contains(low, 'no ') && contains(low, 'ack')
+            msg = sprintf(['%s opened but the LED-driver FPGA did not answer. Check the board is ' ...
+                'powered and on %s (Device Manager), or type AUTO in the Port field to re-probe.'], port, port);
+        end
+        setLedStatus(['LED error: ' msg], [0.75 0.15 0.15]);
+        uialert(h.fig, msg, 'LED quick-set failed');
+    end
+
+    function setLedStatus(msg, rgb)
+        h.ledStatus.Text      = msg;
+        h.ledStatus.FontColor = rgb;
+        h.ledStatus.Tooltip   = msg;    % full text on hover if the label clips
+        drawnow limitrate
     end
 end
 
@@ -544,7 +680,7 @@ function selftest()
     blocks(1) = struct('stimName', g.name, 'fnName', g.fn, 'params', ps, 'epochs', 5, 'label', 'grey gauss');
     blocks(2) = struct('stimName', j.name, 'fnName', j.fn, 'params', pj, 'epochs', 3, 'label', 'jit');
     opts = struct('preStim', 2, 'postStim', 1, 'itp', 3, 'seedBase', 7, ...
-                  'triggerAcq', false, 'debug', true, 'stimIndex', 3);
+                  'triggerAcq', false, 'stimIndex', 3);
     opts.leds = struct('enabled', true, 'port', 'AUTO', 'mode', 2, ...
                        'during_epochs',   [0.75 0 0; 0 0.5 0; 0 0 0; 0 0 0.125], ...
                        'between_epochs',  [1 1 1; 0 0 0; 0 0 0; 0 0 0], ...
@@ -560,8 +696,8 @@ function selftest()
         'json round-trip During grid');
     assert(abs(o2.leds.between_epochs(1, 1) - 1) < 1e-9 && all(o2.leds.end_of_stimulus(:) == 0), ...
         'json round-trip Between + End grids');
-    assert(o2.debug == true && o2.stimIndex == 3 && o2.triggerAcq == false, ...
-        'session-state round-trip (debug / stimIndex / triggerAcq)');
+    assert(o2.stimIndex == 3 && o2.triggerAcq == false, ...
+        'session-state round-trip (stimIndex / triggerAcq)');
 
     pr = local_loadPresets();                       % presets read from rig_config.json
     assert(numel(pr) >= 2 && any(strcmp({pr.name}, 'Off')) && any(strcmp({pr.name}, 'macaque s-iso')), ...

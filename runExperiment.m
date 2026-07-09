@@ -46,7 +46,7 @@ function runExperiment(protocol, opts)
     if nargin < 2 || isempty(opts), opts = struct(); end
     d = struct('preStim', 2, 'postStim', 1, 'itp', 3, 'settle', 1, ...
                'triggerAcq', true, 'preflight', true, 'continueOnError', false, ...
-               'seedBase', 2);
+               'seedBase', 2, 'serverTimeout', 10);   % serverTimeout (s): preflight liveness bound
     fn = fieldnames(d);
     for i = 1:numel(fn)
         if ~isfield(opts, fn{i}) || isempty(opts.(fn{i})), opts.(fn{i}) = d.(fn{i}); end
@@ -59,18 +59,13 @@ function runExperiment(protocol, opts)
 
     getf = @(s, f, dv) subsref_default(s, f, dv);   % local: field-or-default
 
-    % ---- pre-flight: is the OpenGL/Stage server up? (fail fast, before any acquisition) ----
+    % ---- pre-flight: is the OpenGL/Stage server up AND answering? (fail fast) ----
+    % Bounded by a receive timeout so a server that accepts the TCP connection but
+    % never replies (not fully started, wedged, or a stale client still attached)
+    % fails in seconds with a clear message -- instead of hanging forever in
+    % TcpConnection.read (whose readTimeout defaults to 0 = infinite).
     if opts.preflight
-        try
-            c  = stage.core.network.StageClient();
-            c.connect(stageHost());
-            cs = c.getCanvasSize();
-            c.disconnect();
-            fprintf('[runExperiment] Stage server OK. Canvas: %d x %d\n', cs(1), cs(2));
-        catch err
-            error('runExperiment:noServer', ...
-                  'Stage server not reachable (start it first). Underlying error: %s', err.message);
-        end
+        local_preflightStage(stageHost(), 5678, opts.serverTimeout);
     end
 
     % ---- optional LED-driver setup (additive; darks + closes on ANY exit) ----
@@ -131,6 +126,50 @@ function v = subsref_default(s, f, dv)
 end
 
 
+function local_preflightStage(host, port, timeoutS)
+% Liveness probe for the Stage server with a RECEIVE TIMEOUT, using netbox's
+% public API (the timeout setter is buried private inside StageClient, so we
+% drive one bounded getCanvasSize round-trip ourselves). The probe connects,
+% asks for the canvas size, and requires a reply within timeoutS seconds. A
+% clean disconnect frees the single-client server before the real run connects.
+    if isempty(host), host = 'localhost'; end
+    conn = [];
+    try
+        conn = netbox.Connection(host, port);              % TCP connect (10 s built-in)
+        conn.setReceiveTimeout(round(max(1, timeoutS) * 1000));
+        conn.sendEvent(netbox.NetEvent('getCanvasSize'));
+        conn.receiveMessage();                             % returns iff the server answered
+    catch probeErr
+        local_safeDisconnect(conn);
+        if strcmp(probeErr.identifier, 'Connection:ReceiveTimeout')
+            error('runExperiment:serverSilent', ...
+                ['Stage server at %s:%d accepted the connection but did not answer within %g s.\n' ...
+                 'The port is open yet the Stage.Server app is not responding -- usually it is not\n' ...
+                 'fully started (no presentation window yet), a previous client is still attached, or\n' ...
+                 'it is wedged. On %s: (re)start Stage.Server, wait until it is waiting for a client,\n' ...
+                 'then run again.'], host, port, timeoutS, host);
+        else
+            error('runExperiment:noServer', ...
+                'Stage server not reachable at %s:%d (start it first). Underlying error: %s', ...
+                host, port, probeErr.message);
+        end
+    end
+    local_safeDisconnect(conn);
+    fprintf('[runExperiment] Stage server responded at %s:%d.\n', host, port);
+end
+
+
+function local_safeDisconnect(conn)
+% Close a netbox probe connection, ignoring any error (best-effort cleanup).
+    if ~isempty(conn)
+        try
+            conn.disconnect();
+        catch
+        end
+    end
+end
+
+
 function cu = local_setupLeds(L, newRig)
 % Open the LED driver, load the 4x3 intensity grid (0..1 linear duty), enable the requested
 % mode, and return an onCleanup that darks (mode 0) + closes the port on ANY exit (normal
@@ -142,7 +181,7 @@ function cu = local_setupLeds(L, newRig)
     if exist('NeitzLedRig', 'class') ~= 8
         addpath(fullfile(fileparts(mfilename('fullpath')), 'ml-uled'));
     end
-    port = subsref_default(L, 'port', 'AUTO');
+    port = subsref_default(L, 'port', char(loadRigConfig('led_port', 'AUTO')));
     mode = subsref_default(L, 'mode', 2);
     I    = subsref_default(L, 'intensity', zeros(4, 3));
     led  = newRig(port);                 % opens the serial port (an error here ABORTS, intended)

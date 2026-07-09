@@ -6,7 +6,7 @@
 %        Adjust parameters in this section to control the experiment.
 
 %% ===== EXPERIMENT PARAMETERS =====
-stim_dur    = 10;       % stimulus duration (seconds)
+stim_dur    = 300;       % stimulus duration (seconds)
 pre_stim    = 2;        % pre-stimulus window (seconds)
 itp         = 3;        % inter-trial pause (seconds)
 nTrials     = 5;        % number of trials
@@ -16,12 +16,12 @@ refreshRate = 60;       % monitor refresh rate (Hz) - always 60
 stimFrames = stim_dur * refreshRate;   % total stimulus frames
 
 % Stimulus flicker rate (how fast the stimulus content changes)
-flickerHz = 4;          % stimulus update frequency (Hz)
+flickerHz = 60;          % stimulus update frequency (Hz)
 
 
 %% ===== TRIAL LOOP =====
 for ind = 1:nTrials
-
+    
     pause(1)
     % Trigger key to start Clampex acquisition
     NET.addAssembly('System.Windows.Forms');

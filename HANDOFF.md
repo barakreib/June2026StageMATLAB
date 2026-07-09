@@ -41,8 +41,8 @@ color-vision experiment, plus a Python analysis suite. Three jobs:
 **Stimulus side (`June2026StageMATLAB/`):**
 - `lcGammaCorrect.m` — inverse gamma `code = intended^(1/γ)`; γ from `rig_config.json`.
 - `rig_config.json` + `loadRigConfig.m` (cached reader) + `setRigConfig.m` (writer, clears
-  cache) — single source of truth for γ, projector, `stage_host`, `channel_to_led` (TODO),
-  `led_presets`. `calibrateGamma.m` re-fits γ from measurements.
+  cache) — single source of truth for γ, projector, `stage_host`, `led_port` (the LED
+  driver's COM port), `channel_to_led` (TODO), `led_presets`. `calibrateGamma.m` re-fits γ.
 - **Noise:** `sqrt(2)*erfinv(2*rand(mt19937ar)-1)` (inverse-CDF; base MATLAB, no Stats Toolbox).
   Byte-identical to numpy `RandomState` + `scipy.special.ndtri`, so noise regenerates in Python
   from the seed alone. **Never revert to `randn`** (ziggurat isn't Python-reproducible).
@@ -72,9 +72,14 @@ color-vision experiment, plus a Python analysis suite. Three jobs:
 Pick a stimulus → edit params → set epochs/label → **Add block** (chain blocks) → **Run**
 (→ `runExperiment`). Save/Load protocols as JSON in `experiments/`.
 - **Stage host (IPv4)** field — writes `rig_config` `stage_host` on Run; blank/`localhost` = local.
-- **LEDs:** Mode dropdown, Port, **Preset dropdown** (from `rig_config` `led_presets`), and
+- **LEDs:** Mode dropdown, Port (default from `rig_config` `led_port` = COM3 at the rig;
+  type AUTO to probe), **Preset dropdown** (from `rig_config` `led_presets`), and
   **THREE 4×3 intensity grids** — `During epochs` / `Between epochs` / `End of stimulus`. The
   three headers are radio-style selectors; picking a preset fills the SELECTED grid only.
+  **Set now / Off now** buttons push the SELECTED grid + Mode to the rig immediately
+  (quick-set between runs). ONE shared base-workspace `rig` is used everywhere: quick-set
+  adopts a live workspace `rig` or publishes its own; demo scripts reuse it too; it is
+  released automatically before an LED-enabled Run (runExperiment opens its own).
 - **Enable LED driver** + **Debug** checkboxes (above Run). **Debug = skip Clampex acquisition
   ONLY** — the LED driver stays independently controllable (do NOT make Debug force LEDs off).
 - **Trigger Clampex acq** checkbox (uncheck on macOS / for local dry runs — the trigger is

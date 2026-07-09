@@ -1,22 +1,44 @@
-function triggerAcquisition(bringToFront)
+function triggerAcquisition(~)
 % triggerAcquisition  Start one Clampex acquisition epoch via its sequencing key.
 %
-%   triggerAcquisition()       - send Ctrl+Shift+1 (the Clampex sequencing key)
-%   triggerAcquisition(true)   - Alt+Tab to bring Clampex to the front first
+%   triggerAcquisition()      - focus Clampex, then send Ctrl+Shift+1
+%   triggerAcquisition(any)   - the argument is ignored (kept so existing callers
+%                               like runExperiment(...) can still pass a flag).
 %
-%   This is the SendKeys trigger from Experimenter5000, factored out so runExperiment
-%   can call it -- and so it can later be swapped for a proper acquisition-control
-%   bridge (one that also STOPS by epoch count and captures the .abf filename) WITHOUT
-%   touching the orchestrator. Windows-only (uses .NET System.Windows.Forms).
+%   Sends the SAME keystroke Experimenter5000_v2 used -- Ctrl+Shift+1, the Clampex
+%   sequencing key -- but FIRST explicitly brings the Clampex window to the
+%   foreground by process name. This is the fix for "the GUI doesn't trigger
+%   Clampex": Experimenter5000_v2 ran from the MATLAB command window (Clampex was
+%   the previous window, so a bare Alt+Tab reached it), but stimulusGUI is its own
+%   app window -- from there Alt+Tab lands on MATLAB or the app itself, so the
+%   keystroke never got to Clampex. Activating Clampex explicitly works from
+%   either caller. Windows-only (.NET System.Windows.Forms + Microsoft.VisualBasic).
 %
-%   NOTE: this fires acquisition but cannot confirm it started or learn the .abf name;
-%   that limitation is why the stimulus manifest is paired to .abf files by trial order.
+%   NOTE: still fire-and-forget -- it cannot confirm acquisition started or learn
+%   the .abf filename; that is why the manifest is paired to .abf files by trial
+%   order downstream.
 
-    if nargin < 1, bringToFront = false; end
     NET.addAssembly('System.Windows.Forms');
-    if bringToFront
-        System.Windows.Forms.SendKeys.SendWait('%{TAB}');   % Alt+Tab -> Clampex to front
-        pause(0.01);
+
+    % Explicitly focus Clampex (robust when called from the GUI). Fall back to the
+    % old Alt+Tab only if no Clampex process is found, so odd setups still behave
+    % as before.
+    activated = false;
+    try
+        procs = System.Diagnostics.Process.GetProcessesByName('Clampex');
+        if procs.Length > 0
+            NET.addAssembly('Microsoft.VisualBasic');
+            Microsoft.VisualBasic.Interaction.AppActivate(procs(1).Id);   % by PID
+            activated = true;
+            pause(0.05);   % let the window come to the foreground before typing
+        end
+    catch
+        activated = false;   % assembly/activation failed -> use the fallback below
     end
-    System.Windows.Forms.SendKeys.SendWait('^+{1}');          % Ctrl+Shift+1 -> start epoch
+    if ~activated
+        System.Windows.Forms.SendKeys.SendWait('%{TAB}');   % fallback: Alt+Tab
+        pause(0.05);
+    end
+
+    System.Windows.Forms.SendKeys.SendWait('^+{1}');   % Ctrl+Shift+1 -> start epoch
 end

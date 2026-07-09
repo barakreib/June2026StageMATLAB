@@ -41,7 +41,7 @@ classdef NeitzLedRig < handle
     properties (Constant)
         BAUD_DEFAULT   = 115200;
         CMD_WRITE_RAM  = uint8(1);      % payload = [address, data...]
-        CMD_SET_TTL    = uint8(2);      % payload byte = bits[2:0] i_RGB value (active-low) + bit3 enable
+        CMD_SET_TTL    = uint8(2);      % payload byte = bits[2:0] i_RGB value (active-high one-hot) + bit3 enable
         ACK_BYTE       = uint8(6);      % 0x06
         NACK_BYTE      = uint8(21);     % 0x15
         ADDR_MODE      = uint8(2);      % sp256x8 RAM address of OperationMode
@@ -85,6 +85,9 @@ classdef NeitzLedRig < handle
             obj.sp.Timeout = 0.5;
             setDTR(obj.sp, true);   % FTDI VCP won't reliably drive TX until DTR and
             setRTS(obj.sp, true);   % RTS are asserted (same fix as the C# SerialTransport)
+            pause(0.25);            % let the lines settle BEFORE the first bytes: writing
+                                    % into the settling window garbles the frame and fails
+                                    % the connect (seen on the Windows 11 rig; harmless on macOS)
             flush(obj.sp);
             if ~obj.sendPacket(obj.CMD_WRITE_RAM, uint8([obj.ADDR_SCRATCH, 0]))
                 delete(obj.sp); obj.sp = [];
@@ -138,13 +141,13 @@ classdef NeitzLedRig < handle
         end
 
         function ok = setTtlDebug(obj, enable, r, g, b)
-            % Debug: inject the i_RGB colour field over RS-232, matching the
-            % real TTL lines (active-low / one-cold): R=011, G=101, B=110; 0 or
-            % 2+ colours -> intermediate -> dark.  enable=false reverts to pins.
-            rgb = 7;                            % 111 = no colour
-            if logical(r), rgb = rgb - 4; end   % R = i_RGB bit2 low
-            if logical(g), rgb = rgb - 2; end   % G = i_RGB bit1 low
-            if logical(b), rgb = rgb - 1; end   % B = i_RGB bit0 low
+            % Debug: inject the i_RGB colour field over RS-232, matching the real
+            % projector TTL lines (active-HIGH / one-hot): R=100, G=010, B=001;
+            % 0 or 2+ colours -> dark.  enable=false reverts to the physical pins.
+            rgb = 0;                            % 000 = no colour
+            if logical(r), rgb = rgb + 4; end   % R = i_RGB bit2 high (100)
+            if logical(g), rgb = rgb + 2; end   % G = i_RGB bit1 high (010)
+            if logical(b), rgb = rgb + 1; end   % B = i_RGB bit0 high (001)
             v = uint8(rgb + logical(enable) * 8);
             ok = obj.sendPacket(obj.CMD_SET_TTL, v);
         end
@@ -238,6 +241,7 @@ classdef NeitzLedRig < handle
                 configureTerminator(sp, "LF");
                 sp.Timeout = 0.3;
                 setDTR(sp, true); setRTS(sp, true);
+                pause(0.25);   % settle DTR/RTS before the first bytes (as in the constructor)
                 flush(sp);
                 type = NeitzLedRig.CMD_WRITE_RAM;
                 payload = uint8([NeitzLedRig.ADDR_SCRATCH, 0]);

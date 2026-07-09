@@ -2,27 +2,24 @@
 %
 % Every call returns a logical ok = the FPGA ACKed the write.
 %
-% LIFECYCLE: keep ONE rig and reuse it for many sends -- the COM port stays
-% open until you `clear rig` / `delete(rig)` (the destructor sets mode 0 and
-% closes it).  The guard below releases a previous run's rig so re-running
-% never hits "port in use".
-if exist('rig','var'); try, delete(rig); catch, end; clear rig; end
-
-% ----- CONNECT: pick ONE. Hard-coding is the most predictable. -----
-% rig = NeitzLedRig();                          % auto-detect (probes for the
-%                                               %   FPGA's ACK -- not a blind sweep)
-% rig = NeitzLedRig("COM21");                   % Windows 11: hard-code the COM port
-rig = NeitzLedRig('/dev/cu.usbserial-1101');    % macOS: hard-code the /dev/cu.* node
-% Find the port in Device Manager (Windows, "USB Serial Port (COMxx)") or via
-% `serialportlist` (either OS).
-
-cleanupObj = onCleanup(@() clear('rig'));   % close the port when this clears
+% LIFECYCLE: ONE shared rig for the whole MATLAB session -- this script, the
+% stimulusGUI quick-set, and the command prompt all reuse the base-workspace
+% `rig` (one open COM port, no reconnect cost). A live rig is REUSED as-is; a
+% stale one (cleared / unplugged) is rebuilt. `clear rig` closes the port when
+% you are done (the destructor sets mode 0 first).
+if ~(exist('rig','var') && isa(rig,'NeitzLedRig') && isvalid(rig) && rig.isConnected())
+    clear rig                                   % drop any stale handle, then connect:
+    rig = NeitzLedRig('COM3');                  % this rig's port (rig_config led_port)
+    % rig = NeitzLedRig();                      % AUTO-probe fallback (slower), if the
+    %                                           %   port ever moves; see Device Manager
+    % rig = NeitzLedRig('/dev/cu.usbserial-1101');   % macOS node
+end
 
 % ===== OperationMode -- rig.setMode(m) (matches the C# radio buttons) =====
 %   0 OFF    1 DC red    2 Video RGB (no sync)    3 Video RGB (w/ sync)
 %   4 Pattern (FUTURE, not built -> dark)         5 LUT (FUTURE, not built -> dark)
 % DC red drives the Red column ignoring i_RGB; the video modes pick the colour
-% from i_RGB (real TTL pins, or setTtlDebug below: R=011, G=101, B=110; else dark).
+% from i_RGB (real TTL pins, or setTtlDebug below: R=100, G=010, B=001; else dark).
 
 % ---- load the 12 intensity registers (4 LEDs x R/G/B), 0..1 linear duty ----
 for led = 0:3
