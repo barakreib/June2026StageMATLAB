@@ -20,9 +20,10 @@ function outPath = writeStimManifest(outDir, record)
 %   are added automatically:
 %     - `timestamp`      : local ISO-8601 time of the presentation.
 %     - `rig`            : the rig hardware/calibration state from rig_config.json
-%                          (projector, projector_mode, gamma, channel_to_led, ...), so
-%                          each recording is self-describing for the importer. Stamped
-%                          AFTER the signature, so it does not affect stimulus identity.
+%                          (projector, projector_mode, gamma + the full linearization
+%                          model/LUT, channel_to_led, ...), so each recording is
+%                          self-describing for the importer. Stamped AFTER the
+%                          signature, so it does not affect stimulus identity.
 %     - `stim_signature` : a hash of the record's DEFINING params EXCLUDING the seed
 %                          (the seed varies per epoch for independent noise). Repeated
 %                          epochs of the same PROTOCOL therefore share a stim_signature,
@@ -96,7 +97,9 @@ function r = local_rig_state()
 % projector-channel -> external-LED map. Missing fields are simply omitted.
     cfg = loadRigConfig();
     r = struct();
-    for f = {'projector', 'projector_mode', 'gamma', 'channel_to_led', 'led_spectra_file'}
+    for f = {'projector', 'projector_mode', 'gamma', 'gamma_model', 'gamma_source', ...
+             'gamma_calibrated_on', 'dlp_lut_codes', 'dlp_lut_output_norm', ...
+             'channel_to_led', 'led_spectra_file'}
         if isstruct(cfg) && isfield(cfg, f{1}), r.(f{1}) = cfg.(f{1}); end
     end
 end

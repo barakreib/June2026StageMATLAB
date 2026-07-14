@@ -1,6 +1,13 @@
 function [gamma, gain, R2] = calibrateGamma(inputFraction, output, varargin)
 % calibrateGamma  Fit the LightCrafter's power-law gamma from measured light output.
 %
+%   NOTE (2026-07): the measured LightCrafter response turned out NOT to be a
+%   pure power law (TI's proprietary de-gamma LUT) -- calibrateDlpResponse.m is
+%   now the PRIMARY calibration tool (measured monotone LUT + model comparison).
+%   This power fit remains for quick checks and legacy configs. Beware that
+%   'write' here sets gamma_model='power', switching lcGammaCorrect BACK to the
+%   power model and off the measured LUT.
+%
 %   [gamma, gain, R2] = calibrateGamma(inputFraction, output)
 %   [gamma, gain, R2] = calibrateGamma()                    % rig reference points -> 2.2056
 %   [gamma, gain, R2] = calibrateGamma(..., 'write', true)  % also update rig_config.json

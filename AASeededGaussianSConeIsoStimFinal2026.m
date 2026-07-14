@@ -64,6 +64,15 @@ function AASeededGaussianSConeIsoStimFinal2026(seed, mu, sigma, flickerHz, stimF
     noiseVals = mu + sigma .* (sqrt(2) .* erfinv(2 .* rand(stream, checksY, checksX, nUpdates) - 1));
     noiseVals = min(max(noiseVals, 0), 1);
 
+    % ---- OPTIONAL troubleshooting dump (rig_config: "debug_values_csv": true) ----
+    % One CSV row per (update, check, channel): intended linear value + the
+    % linearized value actually sent (fraction and uint8 code). B is constant 0.
+    % Leave the flag false for real experiments (values regenerate from the seed).
+    if loadRigConfig('debug_values_csv', false)
+        writeStimValuesCsv(pwd, 'AASeededGaussianSConeIsoStimFinal2026', seed, ...
+                           struct('R', noiseVals, 'G', 1 - noiseVals));
+    end
+
     % ---- Precompute imageMatrix for EVERY frame ----
     blackRGB = zeros(checksY, checksX, 3, 'uint8');
     allFrameImages = cell(totalFrames, 1);

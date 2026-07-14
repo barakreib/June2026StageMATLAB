@@ -64,6 +64,14 @@ function AASeededGaussianCheckerboardGreyScaleStimFinal(seed, mu, sigma, flicker
     noiseVals = mu + sigma .* (sqrt(2) .* erfinv(2 .* rand(stream, checksY, checksX, nUpdates) - 1));
     noiseVals = min(max(noiseVals, 0), 1);
 
+    % ---- OPTIONAL troubleshooting dump (rig_config: "debug_values_csv": true) ----
+    % One CSV row per (update, check): intended linear value + the linearized
+    % value actually sent (fraction and uint8 code). Leave the flag false for
+    % real experiments -- long checkerboard runs make large files.
+    if loadRigConfig('debug_values_csv', false)
+        writeStimValuesCsv(pwd, 'AASeededGaussianCheckerboardGreyScaleStimFinal', seed, struct('grey', noiseVals));
+    end
+
     % ---- Precompute per-update greyscale images ----
     grayImages = cell(nUpdates, 1);
     for u = 1:nUpdates

@@ -24,7 +24,7 @@ function AASeededGaussianGreyScaleStimFinal2026(seed, mu, sigma, flickerHz, stim
 
     % ---- Defaults (allow standalone execution with no arguments) ----
     if nargin < 6 || isempty(refreshRate), refreshRate = 60;              end
-    if nargin < 1 || isempty(seed),        seed        = 2;               end
+    if nargin < 1 || isempty(seed),        seed        = 10;               end
     if nargin < 2 || isempty(mu),          mu          = 0.5;             end
     if nargin < 3 || isempty(sigma),       sigma       = 0.3;             end
     if nargin < 4 || isempty(flickerHz),   flickerHz   = 4;               end
@@ -63,6 +63,14 @@ function AASeededGaussianGreyScaleStimFinal2026(seed, mu, sigma, flickerHz, stim
     % sqrt(2)*erfinv(2*u-1) == norminv(u) exactly, so no toolbox is required.
     noiseVals = mu + sigma .* (sqrt(2) .* erfinv(2 .* rand(stream, checksY, checksX, nUpdates) - 1));
     noiseVals = min(max(noiseVals, 0), 1);
+
+    % ---- OPTIONAL troubleshooting dump (rig_config: "debug_values_csv": true) ----
+    % One CSV row per (update, check): intended linear value + the linearized
+    % value actually sent (fraction and uint8 code). Leave the flag false for
+    % real experiments (the values regenerate from the seed).
+    if loadRigConfig('debug_values_csv', false)
+        writeStimValuesCsv(pwd, 'AASeededGaussianGreyScaleStimFinal2026', seed, struct('grey', noiseVals));
+    end
 
     % ---- Precompute imageMatrix for EVERY frame (cell array) ----
     blackRGB = zeros(checksY, checksX, 3, 'uint8');
