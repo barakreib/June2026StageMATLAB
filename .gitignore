@@ -1,5 +1,7 @@
 # Generated per-day stimulus manifests — DATA, not code (they live beside the .abf files).
 *_stim_manifest.jsonl
+*_stim_manifest.json
+*_stim_manifest.json.tmp
 
 # macOS / editor junk
 .DS_Store

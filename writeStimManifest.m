@@ -3,15 +3,30 @@ function outPath = writeStimManifest(outDir, record)
 %
 %   outPath = writeStimManifest(outDir, record)
 %
-%   Writes one JSON object per line (JSON Lines) to
-%       <outDir>/YYYY_MM_DD_stim_manifest.jsonl
-%   i.e. one row per trial, in trial order. The Neitz_Analysis_Suite pairs each row
-%   with the Clampex .abf recorded for that trial BY ORDER (and refuses to pair when the
-%   row and recording counts disagree), then regenerates the exact stimulus noise from
-%   record.seed via reproduce_noise -- so NO per-frame stimulus values need to be stored
-%   or shipped. (The `timestamp` below is also an order cross-check: the suite's
-%   apply_session_manifest compares each row's time to the paired .abf's recorded time,
-%   catching an equal-count-but-shifted pairing, not just a count mismatch.)
+%   DUAL-WRITE (transitional). Each call writes the trial to TWO files in outDir:
+%
+%   (a) FLAT  <outDir>/YYYY_MM_DD_stim_manifest.jsonl   (legacy, unchanged)
+%       One JSON object per line (JSON Lines), one row per trial, in trial order.
+%       This is the format the Neitz_Analysis_Suite pairs to the Clampex .abf files
+%       BY ORDER (and refuses to pair on a row/recording count or timestamp mismatch),
+%       then regenerates the exact noise from record.seed -- so NO per-frame values are
+%       stored. outPath (returned) is this file.
+%
+%   (b) NESTED <outDir>/YYYY_MM_DD_stim_manifest.json   (new, hierarchical)
+%       One document per day, mirroring how stimulusGUI organizes a session:
+%           day -> cells[] (patched cell) -> blocks[] (stimulus + label + params + LEDs)
+%               -> epochs[] (each with its seed + timestamp + frame_sync).
+%       Session/block/epoch context (which cell, which block, the LED grid) comes from a
+%       base-workspace struct `neitzSessionContext` that runExperiment/stimulusGUI publish
+%       (see local_sessionContext). A standalone stimulus run with no context still logs
+%       under cell "(standalone)" (or a base-workspace `cellName`). The nested write is
+%       best-effort: a failure there NEVER aborts the trial (the flat .jsonl is the
+%       source of truth), and the whole tree is written atomically (temp file + rename).
+%
+%   The nested document is a superset of the flat one and is LOSSLESSLY FLATTENABLE back to
+%   the flat row order (document order == acquisition order), so the analysis reader can be
+%   taught to consume it later; until then the .jsonl keeps the import pipeline unchanged.
+%   Once the analysis side reads nested, the .jsonl write can be dropped ("replace").
 %
 %   `record` is a struct of metadata: seed, mu, sigma, checks_x, checks_y,
 %   n_updates, update_every_n_frames, refresh_rate_hz, stim_frames, gamma,
@@ -54,11 +69,20 @@ function outPath = writeStimManifest(outDir, record)
     dateStr = char(datetime('now', 'Format', 'yyyy_MM_dd'));
     outPath = fullfile(outDir, [dateStr '_stim_manifest.jsonl']);
 
+    % ---- (a) FLAT .jsonl (legacy, unchanged) -- one line per trial ----
     fid = fopen(outPath, 'a');
     if fid < 0, error('writeStimManifest:cannotOpen', 'Cannot open %s for writing', outPath); end
     closer = onCleanup(@() fclose(fid));
-
     fprintf(fid, '%s\n', jsonencode(record));
+    clear closer;   % force fclose before we touch the nested file
+
+    % ---- (b) NESTED .json (day -> cell -> block -> epoch) -- best-effort, atomic ----
+    try
+        local_writeNested(outDir, record, dateStr);
+    catch nestedErr
+        fprintf(2, '[writeStimManifest] WARNING: nested manifest write failed (flat .jsonl OK): %s\n', ...
+                nestedErr.message);
+    end
 end
 
 
@@ -102,4 +126,181 @@ function r = local_rig_state()
              'channel_to_led', 'led_spectra_file'}
         if isstruct(cfg) && isfield(cfg, f{1}), r.(f{1}) = cfg.(f{1}); end
     end
+end
+
+
+% ============================ nested (hierarchical) manifest ============================
+function local_writeNested(outDir, record, dateStr)
+% Insert one trial into the day's nested day->cell->block->epoch document, appending to the
+% CURRENT (last) cell/block so document order stays acquisition order, and write the whole
+% tree back atomically. `record` already carries stim_signature, rig and timestamp.
+    nestedPath = fullfile(outDir, [dateStr '_stim_manifest.json']);
+    ctx = local_sessionContext();
+
+    % ---- load or initialize the tree (a corrupt file is rebuilt; flat .jsonl is the net) ----
+    if exist(nestedPath, 'file')
+        try
+            tree = jsondecode(fileread(nestedPath));
+        catch
+            tree = local_newTree(record, dateStr);
+        end
+    else
+        tree = local_newTree(record, dateStr);
+    end
+    if ~isfield(tree, 'rig') && isfield(record, 'rig'), tree.rig = record.rig; end
+    cells = local_asCellArray(local_getfield(tree, 'cells', {}));
+
+    % Deep-normalize EVERY collection to a cell array up front. jsondecode collapses a
+    % single-element JSON array to a struct; without this, an untouched single-epoch block
+    % (or single-block cell) would re-encode as a JSON object instead of an array, making
+    % the output shape inconsistent. Cell arrays always jsonencode as arrays.
+    for ii = 1:numel(cells)
+        bl = local_asCellArray(local_getfield(cells{ii}, 'blocks', {}));
+        for jj = 1:numel(bl)
+            bl{jj}.epochs = local_asCellArray(local_getfield(bl{jj}, 'epochs', {}));
+        end
+        cells{ii}.blocks = bl;
+    end
+
+    % ---- find-or-append the cell: match the LAST cell by name, else start a new one ----
+    if ~isempty(cells) && strcmp(local_getfield(cells{end}, 'cell_name', ''), ctx.cell_name)
+        ci = numel(cells);
+    else
+        cells{end+1} = struct('cell_name', ctx.cell_name, 'blocks', {{}});
+        ci = numel(cells);
+    end
+    blocks = local_asCellArray(local_getfield(cells{ci}, 'blocks', {}));
+
+    % ---- find-or-append the block: match the cell's LAST block by index + signature ----
+    sig = local_getfield(record, 'stim_signature', '');
+    if ~isempty(blocks) && local_sameBlock(blocks{end}, ctx.block_index, sig)
+        bi = numel(blocks);
+    else
+        blocks{end+1} = local_newBlock(record, ctx);
+        bi = numel(blocks);
+    end
+
+    % ---- append the epoch (index derived from what is already there) ----
+    epochs = local_asCellArray(local_getfield(blocks{bi}, 'epochs', {}));
+    epochs{end+1} = local_epochNode(record, numel(epochs) + 1);
+
+    blocks{bi}.epochs = epochs;
+    cells{ci}.blocks  = blocks;
+    tree.cells        = cells;
+
+    local_atomicWrite(nestedPath, jsonencode(tree, 'PrettyPrint', true));
+end
+
+
+function t = local_newTree(record, dateStr)
+    t = struct('format', 'neitz-stim-manifest/2', 'date', strrep(dateStr, '_', '-'));
+    if isfield(record, 'rig'), t.rig = record.rig; end
+    t.cells = {};
+end
+
+
+function b = local_newBlock(record, ctx)
+% A new block node: identity + label + LED grid + the params constant across its epochs.
+    b = struct();
+    if ~isempty(ctx.block_index), b.block_index = ctx.block_index; end
+    b.label          = ctx.block_label;
+    b.stimulus       = local_getfield(record, 'stimulus', '');
+    b.stim_type      = local_getfield(record, 'stim_type', '');
+    b.cone_isolation = local_getfield(record, 'cone_isolation', '');
+    b.stim_signature = local_getfield(record, 'stim_signature', '');
+    L = ctx.leds;
+    b.leds   = struct('enabled',   logical(local_getfield(L, 'enabled', false)), ...
+                      'mode',      double(local_getfield(L, 'mode', 0)), ...
+                      'intensity', local_getfield(L, 'intensity', zeros(4, 3)));
+    b.params = local_blockParams(record);
+    b.epochs = {};
+end
+
+
+function p = local_blockParams(record)
+% Everything in the record that DEFINES the block and is constant across its epochs:
+% the record minus block identity, the per-epoch fields, and the session `rig`.
+    p = record;
+    for f = {'stimulus', 'stim_type', 'cone_isolation', 'stim_signature', ...
+             'seed', 'timestamp', 'frame_sync', 'rig', 'epoch'}
+        if isfield(p, f{1}), p = rmfield(p, f{1}); end
+    end
+end
+
+
+function e = local_epochNode(record, n)
+% One epoch: only what varies per presentation (seed, timestamp, frame-sync telemetry).
+    e = struct('epoch', n);
+    if isfield(record, 'seed'),       e.seed       = record.seed;       end
+    e.timestamp = local_getfield(record, 'timestamp', '');
+    if isfield(record, 'frame_sync'), e.frame_sync = record.frame_sync; end
+end
+
+
+function tf = local_sameBlock(block, blockIndex, sig)
+% Same block as the incoming epoch? Same signature, and (when both known) same block index,
+% so two consecutive identical-protocol GUI blocks stay separate nodes.
+    tf = strcmp(local_getfield(block, 'stim_signature', ''), sig);
+    if tf && ~isempty(blockIndex) && isfield(block, 'block_index')
+        tf = isequal(block.block_index, blockIndex);
+    end
+end
+
+
+function ctx = local_sessionContext()
+% Read the session context runExperiment/stimulusGUI publish, with a standalone fallback.
+    ctx = struct('cell_name', '', 'block_index', [], 'block_label', '', ...
+                 'leds', struct('enabled', false));
+    try
+        c = evalin('base', 'neitzSessionContext');
+        if isstruct(c)
+            ctx.cell_name   = char(string(local_getfield(c, 'cell_name', '')));
+            ctx.block_index = local_getfield(c, 'block_index', []);
+            ctx.block_label = char(string(local_getfield(c, 'block_label', '')));
+            ctx.leds        = local_getfield(c, 'leds', struct('enabled', false));
+        end
+    catch
+        % no context published -> standalone run
+    end
+    if isempty(ctx.cell_name)
+        try
+            cn = evalin('base', 'cellName');
+            if ~isempty(cn), ctx.cell_name = char(string(cn)); end
+        catch
+        end
+    end
+    if isempty(ctx.cell_name), ctx.cell_name = '(standalone)'; end
+end
+
+
+function c = local_asCellArray(x)
+% Normalize whatever jsondecode produced (struct, struct array, or cell array) into a row
+% cell array of nodes. jsondecode collapses a 1-element JSON array to a struct and an
+% equal-field array to a struct array; a cell array survives -- this unifies all three.
+    if isempty(x)
+        c = {};
+    elseif iscell(x)
+        c = reshape(x, 1, []);
+    elseif isstruct(x)
+        c = num2cell(reshape(x, 1, []));
+    else
+        c = {x};
+    end
+end
+
+
+function v = local_getfield(s, f, d)
+    if isstruct(s) && isfield(s, f) && ~isempty(s.(f)), v = s.(f); else, v = d; end
+end
+
+
+function local_atomicWrite(path, text)
+% Write text to a temp file next to `path`, then rename over it -- so a crash mid-write
+% never leaves a half-written manifest (the reader always sees a complete document).
+    tmp = [path '.tmp'];
+    fid = fopen(tmp, 'w');
+    if fid < 0, error('writeStimManifest:cannotOpenNested', 'Cannot open %s for writing', tmp); end
+    fwrite(fid, text, 'char');
+    fclose(fid);
+    movefile(tmp, path, 'f');
 end

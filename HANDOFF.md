@@ -46,9 +46,14 @@ color-vision experiment, plus a Python analysis suite. Three jobs:
 - **Noise:** `sqrt(2)*erfinv(2*rand(mt19937ar)-1)` (inverse-CDF; base MATLAB, no Stats Toolbox).
   Byte-identical to numpy `RandomState` + `scipy.special.ndtri`, so noise regenerates in Python
   from the seed alone. **Never revert to `randn`** (ziggurat isn't Python-reproducible).
-- `writeStimManifest.m` — appends one JSON line per trial to `YYYY_MM_DD_stim_manifest.jsonl`
-  (git-ignored). Adds `stim_signature` (hash of defining params, EXCLUDING seed AND gamma),
-  a `rig` block, and `timestamp`.
+- `writeStimManifest.m` — **dual-write** per trial (git-ignored). (a) appends one JSON line to
+  the flat `YYYY_MM_DD_stim_manifest.jsonl` (UNCHANGED — the analysis contract); (b) also
+  maintains a nested `YYYY_MM_DD_stim_manifest.json` (`day → cell → block → epochs`) written
+  atomically, using the base-workspace `neitzSessionContext` (cell/block/LEDs) that
+  runExperiment/GUI publish; standalone runs fall back to cell `(standalone)` or a base
+  `cellName`. Both add `stim_signature` (hash of defining params, EXCLUDING seed AND gamma), a
+  `rig` block, and `timestamp`. The nested doc is losslessly flattenable to the flat row order;
+  the `.jsonl` is transitional and will be dropped once the analysis reader consumes nested.
 - `runExperiment.m` — session orchestrator: pre-flights Stage, triggers Clampex per epoch
   (`triggerAcquisition.m` = the unchanged SendKeys), auto-increments the seed per epoch
   (`opts.seedArg`/`opts.seedBase`), optionally drives the LEDs (`opts.leds`), aborts a failed
@@ -71,15 +76,18 @@ color-vision experiment, plus a Python analysis suite. Three jobs:
 ## 5. The GUI (`stimulusGUI.m`) — feature map
 Pick a stimulus → edit params → set epochs/label → **Add block** (chain blocks) → **Run**
 (→ `runExperiment`). Save/Load protocols as JSON in `experiments/`.
+- **Cell** field (top) — name/ID of the patched cell. NOT saved into protocols or the
+  remembered session (transient per patch); passed into `opts.cellName` on Run only, so the
+  nested manifest files each trial under the right cell (see §6). Update it per new cell.
 - **Stage host (IPv4)** field — writes `rig_config` `stage_host` on Run; blank/`localhost` = local.
 - **LEDs:** Mode dropdown, Port (default from `rig_config` `led_port` = COM3 at the rig;
-  type AUTO to probe), **Preset dropdown** (from `rig_config` `led_presets`), and
-  **THREE 4×3 intensity grids** — `During epochs` / `Between epochs` / `End of stimulus`. The
-  three headers are radio-style selectors; picking a preset fills the SELECTED grid only.
-  **Set now / Off now** buttons push the SELECTED grid + Mode to the rig immediately
-  (quick-set between runs). ONE shared base-workspace `rig` is used everywhere: quick-set
-  adopts a live workspace `rig` or publishes its own; demo scripts reuse it too; it is
-  released automatically before an LED-enabled Run (runExperiment opens its own).
+  type AUTO to probe), **Preset dropdown** (from `rig_config` `led_presets`), and **ONE 4×3
+  intensity grid** (LED 0..3 × R/G/B; a preset fills it). **Set now / Off now** buttons push
+  the grid + Mode to the rig immediately (quick-set between runs). ONE shared base-workspace
+  `rig` is used everywhere: quick-set adopts a live workspace `rig` or publishes its own; demo
+  scripts reuse it too; it is released automatically before an LED-enabled Run (runExperiment
+  opens its own). (The old During/Between/End three-grid selector was removed — `runExperiment`
+  only ever applied the During grid, so the other two never drove the LEDs.)
 - **Enable LED driver** + **Debug** checkboxes (above Run). **Debug = skip Clampex acquisition
   ONLY** — the LED driver stays independently controllable (do NOT make Debug force LEDs off).
 - **Trigger Clampex acq** checkbox (uncheck on macOS / for local dry runs — the trigger is
@@ -101,9 +109,11 @@ Pick a stimulus → edit params → set epochs/label → **Add block** (chain bl
 1. **Manifest should stamp the REAL refresh rate.** After the frame-lock fix the stimulus is
    locked to the true ~62 Hz, but the manifest still records `refresh_rate_hz: 60`, so the
    analysis time-axis is off by ~3%. Capture the actual `s.frameRate` at play time → manifest.
-2. **Per-phase LED switching in `runExperiment`.** The GUI saves 3 LED grids (during/between/end)
-   but `runExperiment` only APPLIES the During grid (`opts.leds.intensity` = During). Wire it to
-   set During at stim start, Between in the ITP, End after the last epoch.
+2. **~~Per-phase LED switching~~ (RESOLVED, 2026-07-16).** The old GUI saved 3 LED grids
+   (during/between/end) but `runExperiment` only ever applied the During grid, so Between/End
+   never drove the LEDs. The three-grid selector was **removed** — the GUI now has ONE LED grid
+   (= the applied one). If true per-phase switching is ever wanted, it would be a new feature
+   (set at stim start / ITP / after the last epoch), not a fix to dead UI.
 3. **`rig_config` TODOs:** `channel_to_led` (which external LED each projector R/G/B drives —
    we now know **LED 1 = 565 nm**; the other 3 wavelengths are unknown), `led_spectra_file`,
    and the true cone-isolation `silent_substitution_weights` (current S-iso is a naive
@@ -133,8 +143,9 @@ gives timing only, not naming. Robust path if ever rebuilt: TTL START + **read b
 - **Never index Stage frames by `s.time` — always `s.frame`.** (§6 frame-lock.)
 - `rig_config` `led_presets` are an **array of `{name, values}`** (NOT an object keyed by name)
   so friendly names with spaces survive `jsondecode` (which mangles field names).
-- `NeitzLedRig.setIntensity` **clamps duty to 0..1** — the `macaque s-iso` preset's `B=10`
-  values therefore drive full-on, not 10×.
+- `NeitzLedRig.setIntensity` **clamps duty to 0..1** — so any preset value >1 drives full-on,
+  not N×. (The `macaque s-iso` preset's `B` values were `10`; corrected to `1.0` on 2026-07-16
+  so the config is honest — same full-on result, no behavior change.)
 - `runExperiment` **auto-adds `ml-uled/` to the path** so `NeitzLedRig` resolves under a bare
   `addpath(repo)`.
 - MATLAB column-major fill == numpy `order='F'` (used in reproduce_noise).

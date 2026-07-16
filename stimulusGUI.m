@@ -47,8 +47,16 @@ function stimulusGUI(mode)
             'Add block, repeat to chain blocks, then Run.'], numel(reg)), ...
             'WordWrap', 'on', 'FontAngle', 'italic');
 
-        rp = uigridlayout(outer, [12 1]);
-        rp.RowHeight = {24, '1x', 40, 20, '1x', 36, 26, 152, 34, 36, 30, 40};
+        rp = uigridlayout(outer, [13 1]);
+        rp.RowHeight = {28, 24, '1x', 40, 20, '1x', 36, 26, 152, 34, 36, 30, 40};
+
+        % ----- Cell (patched cell) -- session identity for the nested manifest -----
+        cr = uigridlayout(rp, [1 3]); cr.ColumnWidth = {'fit', 240, '1x'}; cr.Padding = [6 3 6 3];
+        uilabel(cr, 'Text', 'Cell:', 'FontWeight', 'bold');
+        h.cellName = uieditfield(cr, 'text', 'Value', '', ...
+            'Tooltip', ['Name / ID of the patched cell. Recorded in the nested session manifest ' ...
+                        '(day -> cell -> block -> epochs). Update it each time you patch a new cell.']);
+        uilabel(cr, 'Text', 'patched cell -> nested manifest', 'FontAngle', 'italic', 'FontColor', [0.45 0.45 0.45]);
 
         h.paramTitle = uilabel(rp, 'Text', 'Parameters', 'FontWeight', 'bold');
         h.paramTable = uitable(rp, 'ColumnName', {'Parameter', 'Value'}, ...
@@ -67,7 +75,7 @@ function stimulusGUI(mode)
         h.protoTable = uitable(rp, 'ColumnName', {'#', 'Stimulus', 'Epochs', 'Label', 'Params'}, ...
             'ColumnWidth', {30, 240, 60, 120, '1x'}, 'RowName', {}, 'SelectionType', 'row');
 
-        % ----- LEDs (NeitzLedRig): three phase groups; a preset fills the SELECTED one -----
+        % ----- LEDs (NeitzLedRig): one 4x3 intensity grid; a preset fills it -----
         lh = uigridlayout(rp, [1 10]);
         lh.ColumnWidth = {'fit', 'fit', 130, 'fit', 110, 'fit', 184, 'fit', 'fit', '1x'};
         lh.Padding = [6 4 6 4]; lh.ColumnSpacing = 8;
@@ -81,27 +89,21 @@ function stimulusGUI(mode)
                         'Type AUTO to probe for the FPGA instead (slower), or a /dev/cu.* node on macOS.']);
         uilabel(lh, 'Text', 'Preset');
         h.ledPreset = uidropdown(lh, 'Items', local_presetNames(presets), 'ValueChangedFcn', @(s,e) onPreset(), ...
-            'Tooltip', 'Fill the SELECTED group (During / Between / End, chosen below) with a 12-value preset from rig_config.json.');
+            'Tooltip', 'Fill the LED grid with a 12-value preset from rig_config.json.');
         h.ledSetNow = uibutton(lh, 'Text', 'Set now', 'ButtonPushedFcn', @(s,e) onLedSetNow(), ...
-            'Tooltip', ['Quick set: push the SELECTED grid (During / Between / End) and Mode to the rig ' ...
-                        'immediately, without running an experiment -- for LED changes between runs.']);
+            'Tooltip', ['Quick set: push the LED grid and Mode to the rig immediately, ' ...
+                        'without running an experiment -- for LED changes between runs.']);
         h.ledOffNow = uibutton(lh, 'Text', 'Off now', 'ButtonPushedFcn', @(s,e) onLedOffNow(), ...
             'Tooltip', 'Quick set: mode 0 (all LEDs dark) immediately. Grid values are kept.');
 
-        % selector row: the checkbox headers pick which group a preset fills (radio behavior)
-        sel = uigridlayout(rp, [1 4]); sel.Padding = [44 2 6 2]; sel.ColumnSpacing = 20;
-        sel.ColumnWidth = {'fit', 'fit', 'fit', '1x'};
-        h.grpDuring  = uicheckbox(sel, 'Text', 'During epochs',   'Value', true,  'FontWeight', 'bold', 'ValueChangedFcn', @(s,e) onGroupSelect('during'));
-        h.grpBetween = uicheckbox(sel, 'Text', 'Between epochs',  'Value', false, 'FontWeight', 'bold', 'ValueChangedFcn', @(s,e) onGroupSelect('between'));
-        h.grpEnd     = uicheckbox(sel, 'Text', 'End of stimulus', 'Value', false, 'FontWeight', 'bold', 'ValueChangedFcn', @(s,e) onGroupSelect('end'));
+        % status line (LED quick-set feedback)
+        sel = uigridlayout(rp, [1 1]); sel.Padding = [44 2 6 2];
         h.ledStatus  = uilabel(sel, 'Text', '', 'FontAngle', 'italic', ...
             'FontColor', [0.45 0.45 0.45], 'HorizontalAlignment', 'right');
 
-        % three 4x3 intensity grids (LED 0..3 x R/G/B), one per phase
-        tg = uigridlayout(rp, [1 3]); tg.Padding = [6 0 6 0]; tg.ColumnSpacing = 20;
-        h.ledDuring  = local_ledTable(tg);
-        h.ledBetween = local_ledTable(tg);
-        h.ledEnd     = local_ledTable(tg);
+        % one 4x3 intensity grid (LED 0..3 x R/G/B), applied during the run
+        tg = uigridlayout(rp, [1 1]); tg.Padding = [6 0 6 0];
+        h.ledGrid = local_ledTable(tg);
 
         % ----- Stage/OpenGL server host (blank = this machine; an IPv4 = remote) -----
         sr = uigridlayout(rp, [1 3]); sr.ColumnWidth = {'fit', 200, '1x'}; sr.Padding = [6 3 6 3];
@@ -207,6 +209,7 @@ function stimulusGUI(mode)
         end
         protocol = local_buildProtocol(reg, blocks);
         opts     = gatherOpts();
+        opts.cellName = strtrim(char(h.cellName.Value));   % patched cell -> nested manifest (Run only)
         if opts.leds.enabled
             % runExperiment opens its OWN NeitzLedRig; free the quick-set connection first
             % or that open fails with "port in use". (LED driver not enabled: keep ours, so
@@ -313,35 +316,17 @@ function stimulusGUI(mode)
     end
 
     function leds = gatherLeds()
-        d = local_coerce43(h.ledDuring.Data);
         leds = struct('enabled', logical(h.ledEnable.Value), ...
                       'port', char(h.ledPort.Value), ...
                       'mode', double(h.ledMode.Value), ...
-                      'during_epochs',   d, ...
-                      'between_epochs',  local_coerce43(h.ledBetween.Data), ...
-                      'end_of_stimulus', local_coerce43(h.ledEnd.Data), ...
-                      'intensity', d);   % backward-compat: runExperiment applies the During grid
-    end
-
-    function onGroupSelect(which)   % radio behavior: exactly one group is the preset target
-        h.grpDuring.Value  = strcmp(which, 'during');
-        h.grpBetween.Value = strcmp(which, 'between');
-        h.grpEnd.Value     = strcmp(which, 'end');
-    end
-
-    function t = selectedLedTable()
-        if h.grpBetween.Value,  t = h.ledBetween;
-        elseif h.grpEnd.Value,  t = h.ledEnd;
-        else,                   t = h.ledDuring;
-        end
+                      'intensity', local_coerce43(h.ledGrid.Data));   % runExperiment applies this grid
     end
 
     function onPreset()
         name = h.ledPreset.Value;
         k = find(strcmp({presets.name}, name), 1);
         if isempty(k), return; end     % the "(load preset...)" placeholder row
-        t = selectedLedTable();
-        t.Data = presets(k).values;    % fill only the selected group
+        h.ledGrid.Data = presets(k).values;
     end
 
     function applyLedsToUI(L)
@@ -354,10 +339,9 @@ function stimulusGUI(mode)
         h.ledPort.Value = p;
         m = double(getfielddef(L, 'mode', 2));
         if ismember(m, [0 1 2 3]), h.ledMode.Value = m; end
-        dflt = local_coerce43(getfielddef(L, 'intensity', zeros(4, 3)));   % older single-grid files
-        h.ledDuring.Data  = local_coerce43(getfielddef(L, 'during_epochs', dflt));
-        h.ledBetween.Data = local_coerce43(getfielddef(L, 'between_epochs', zeros(4, 3)));
-        h.ledEnd.Data     = local_coerce43(getfielddef(L, 'end_of_stimulus', zeros(4, 3)));
+        % single grid: prefer `intensity`; fall back to a legacy During grid, else zeros
+        grid = getfielddef(L, 'intensity', getfielddef(L, 'during_epochs', zeros(4, 3)));
+        h.ledGrid.Data = local_coerce43(grid);
     end
 
     % ----- LED quick-set: drive the rig NOW, between OpenGL runs (no experiment) -----
@@ -410,7 +394,7 @@ function stimulusGUI(mode)
     function onLedSetNow()
         try
             r    = quickRig();
-            vals = local_coerce43(selectedLedTable().Data);
+            vals = local_coerce43(h.ledGrid.Data);
             ok   = r.setMode(0);               % dark while the registers load (as runExperiment)
             cols = {'r', 'g', 'b'};
             for li = 1:4
@@ -420,10 +404,6 @@ function stimulusGUI(mode)
             end
             md = h.ledMode.Value;
             ok = r.setMode(md) && ok;
-            if h.grpBetween.Value,  grp = 'Between';
-            elseif h.grpEnd.Value,  grp = 'End';
-            else,                   grp = 'During';
-            end
             if ~ok
                 setLedStatus('Sent, but not every write was ACKed -- check the rig.', [0.85 0.45 0.10]);
                 return;
@@ -432,12 +412,12 @@ function stimulusGUI(mode)
             % (or setTtlDebug) drives i_RGB. Say so, so a "nothing lit" isn't mistaken
             % for a failure. Mode 1 (DC red) lights immediately from the grid's R column.
             if md == 2 || md == 3
-                setLedStatus(sprintf(['Set: %s grid, mode %d (video) on %s -- LEDs light only while ' ...
+                setLedStatus(sprintf(['Set: LED grid, mode %d (video) on %s -- LEDs light only while ' ...
                     'the projector drives i_RGB. Use mode 1 (DC red) to see them now.'], ...
-                    grp, md, char(r.Port)), [0.20 0.40 0.55]);
+                    md, char(r.Port)), [0.20 0.40 0.55]);
             else
-                setLedStatus(sprintf('LEDs set now: %s grid, mode %d, on %s.', ...
-                    grp, md, char(r.Port)), [0.13 0.45 0.20]);
+                setLedStatus(sprintf('LEDs set now: LED grid, mode %d, on %s.', ...
+                    md, char(r.Port)), [0.13 0.45 0.20]);
             end
         catch err
             onLedError(err);
@@ -682,20 +662,15 @@ function selftest()
     opts = struct('preStim', 2, 'postStim', 1, 'itp', 3, 'seedBase', 7, ...
                   'triggerAcq', false, 'stimIndex', 3);
     opts.leds = struct('enabled', true, 'port', 'AUTO', 'mode', 2, ...
-                       'during_epochs',   [0.75 0 0; 0 0.5 0; 0 0 0; 0 0 0.125], ...
-                       'between_epochs',  [1 1 1; 0 0 0; 0 0 0; 0 0 0], ...
-                       'end_of_stimulus', zeros(4, 3), ...
-                       'intensity',       [0.75 0 0; 0 0.5 0; 0 0 0; 0 0 0.125]);
+                       'intensity', [0.75 0 0; 0 0.5 0; 0 0 0; 0 0 0.125]);
     [b2, o2] = local_jsonToExperiment(reg, local_experimentToJson(blocks, opts));
     assert(numel(b2) == 2 && strcmp(b2(1).fnName, g.fn) && b2(1).epochs == 5, 'json round-trip blocks');
     assert(isequal(local_argsFor(local_findEntry(reg, b2(1).fnName), b2(1).params), {[], 0.5, 0.3, 4, 600, 60}), ...
         'json round-trip rebuilds gaussian args');
     assert(o2.seedBase == 7, 'json round-trip opts');
     assert(o2.leds.enabled && o2.leds.mode == 2, 'json round-trip LED scalars');
-    assert(isequal(size(o2.leds.during_epochs), [4, 3]) && abs(o2.leds.during_epochs(1, 1) - 0.75) < 1e-9, ...
-        'json round-trip During grid');
-    assert(abs(o2.leds.between_epochs(1, 1) - 1) < 1e-9 && all(o2.leds.end_of_stimulus(:) == 0), ...
-        'json round-trip Between + End grids');
+    assert(isequal(size(o2.leds.intensity), [4, 3]) && abs(o2.leds.intensity(1, 1) - 0.75) < 1e-9, ...
+        'json round-trip LED grid');
     assert(o2.stimIndex == 3 && o2.triggerAcq == false, ...
         'session-state round-trip (stimIndex / triggerAcq)');
 
@@ -704,9 +679,9 @@ function selftest()
         'presets load with friendly names preserved (spaces survive jsondecode)');
     kk = find(strcmp({pr.name}, 'macaque s-iso'), 1);
     assert(isequal(size(pr(kk).values), [4, 3]) && abs(pr(kk).values(4, 1) - 1.0) < 1e-9 ...
-        && abs(pr(kk).values(2, 3) - 10.0) < 1e-9, 'macaque s-iso values (LED3 R=1, LED1 B=10)');
+        && abs(pr(kk).values(2, 3) - 1.0) < 1e-9, 'macaque s-iso values (LED3 R=1, LED1 B=1)');
     assert(numel(local_presetNames(pr)) == numel(pr) + 1, 'preset dropdown includes the placeholder');
-    fprintf('[selftest] LED 3-grid round-trip + presets (Off / macaque s-iso) from rig_config\n');
+    fprintf('[selftest] LED grid round-trip + presets (Off / macaque s-iso) from rig_config\n');
 
     proto = local_buildProtocol(reg, blocks);
     assert(numel(proto) == 2 && proto(1).seedArg == 1 && proto(2).seedArg == 0, 'buildProtocol seedArg per block');
@@ -720,5 +695,59 @@ function selftest()
         fprintf('[selftest] tracked sample experiment loads: %d blocks\n', numel(bs));
     end
 
+    % ---- nested manifest writer: day -> cell -> block -> epoch (2 cells) round-trip ----
+    td = tempname; mkdir(td);
+    restoreCtx = onCleanup(@() local_cleanupNestedTest(td));   % rmdir + clear ctx on any exit
+    assignin('base', 'neitzSessionContext', struct('cell_name', 'cell A', 'block_index', 1, ...
+        'block_label', 'grey', 'leds', struct('enabled', true, 'mode', 2, ...
+        'intensity', [0.5 0 0; 0 0 0; 0 0 0; 0 0 0])));
+    recG = struct('stimulus', 'AASeededGaussianGreyScaleStimFinal2026', 'stim_type', 'gaussian_noise', ...
+        'cone_isolation', 'achromatic', 'seed', 2, 'mu', 0.5, 'sigma', 0.3, ...
+        'stim_frames', 600, 'refresh_rate_hz', 60, 'timestamp', '2026-07-16T09:00:00');
+    writeStimManifest(td, recG);
+    recG.seed = 3; recG.timestamp = '2026-07-16T09:01:00'; writeStimManifest(td, recG);
+    assignin('base', 'neitzSessionContext', struct('cell_name', 'cell B', 'block_index', 1, ...
+        'block_label', 'grey', 'leds', struct('enabled', false)));
+    recG.seed = 4; recG.timestamp = '2026-07-16T09:02:00'; writeStimManifest(td, recG);
+    evalin('base', 'clear neitzSessionContext');
+    ds   = char(datetime('now', 'Format', 'yyyy_MM_dd'));
+    tree = jsondecode(fileread(fullfile(td, [ds '_stim_manifest.json'])));
+    assert(strcmp(tree.format, 'neitz-stim-manifest/2'), 'nested: format tag');
+    cells = local_asCellsTest(tree.cells);
+    assert(numel(cells) == 2 && strcmp(cells{1}.cell_name, 'cell A') && strcmp(cells{2}.cell_name, 'cell B'), ...
+        'nested: two cells in patch order');
+    blA = local_asCellsTest(cells{1}.blocks);
+    epA = local_asCellsTest(blA{1}.epochs);
+    assert(numel(blA) == 1 && numel(epA) == 2 && epA{1}.seed == 2 && epA{2}.seed == 3, ...
+        'nested: block epochs + per-epoch seeds');
+    assert(blA{1}.leds.enabled == true && abs(blA{1}.leds.intensity(1, 1) - 0.5) < 1e-9, ...
+        'nested: LED grid logged on the block');
+    nLines = numel(splitlines(strtrim(fileread(fullfile(td, [ds '_stim_manifest.jsonl'])))));
+    assert(nLines == 3, 'nested: flat .jsonl still one line per epoch (dual-write)');
+    fprintf('[selftest] nested manifest writer: 2-cell/block/epoch round-trip + flat dual-write\n');
+
     fprintf('[selftest] args / parse / json round-trip / buildProtocol all PASS\n');
+end
+
+
+function c = local_asCellsTest(x)
+% Normalize jsondecode output (struct | struct array | cell) to a row cell array (test aid).
+    if isempty(x),        c = {};
+    elseif iscell(x),     c = reshape(x, 1, []);
+    elseif isstruct(x),   c = num2cell(reshape(x, 1, []));
+    else,                 c = {x};
+    end
+end
+
+
+function local_cleanupNestedTest(td)
+% Best-effort cleanup for the nested-writer self-test: clear the context, remove the temp dir.
+    try
+        evalin('base', 'clear neitzSessionContext');
+    catch
+    end
+    try
+        rmdir(td, 's');
+    catch
+    end
 end

@@ -73,6 +73,15 @@ function runExperiment(protocol, opts)
         ledCleanup = local_setupLeds(opts.leds, getf(opts, 'ledFactory', @NeitzLedRig)); %#ok<NASGU>
     end
 
+    % ---- publish the session context for the nested manifest (cell / block / LEDs) ----
+    % writeStimManifest reads base-workspace `neitzSessionContext` to file each trial under
+    % day -> cell -> block -> epoch. Cleared on ANY exit (normal, abort, Ctrl-C) so a later
+    % standalone run cannot inherit a stale cell/block. No effect on the flat .jsonl, the
+    % Stage presentation, or Clampex acquisition.
+    ctxCleanup  = onCleanup(@() evalin('base', 'clear neitzSessionContext'));
+    sessionCell = getf(opts, 'cellName', '');
+    sessionLeds = getf(opts, 'leds', struct('enabled', false));
+
     % ---- run ----
     nBlocks     = numel(protocol);
     totalEpochs = 0;
@@ -87,6 +96,9 @@ function runExperiment(protocol, opts)
         nEp  = getf(blk, 'epochs', 1);
         lbl  = getf(blk, 'label', sprintf('block %d', b));
         sa   = getf(blk, 'seedArg', 0);   % index of the seed arg in .args (0 = stimulus takes no seed)
+
+        % Tell writeStimManifest which cell/block/LEDs these epochs belong to (nested manifest).
+        local_setContext(sessionCell, b, lbl, sessionLeds);
 
         for e = 1:nEp
             epochCount = epochCount + 1;
@@ -123,6 +135,17 @@ end
 function v = subsref_default(s, f, dv)
 % field-or-default: s.(f) if present and non-empty, else dv
     if isfield(s, f) && ~isempty(s.(f)), v = s.(f); else, v = dv; end
+end
+
+
+function local_setContext(cellName, blockIndex, label, leds)
+% Publish the current cell/block/LED state to the base workspace so writeStimManifest can
+% nest each trial under day -> cell -> block -> epoch. Constant across a block's epochs.
+    assignin('base', 'neitzSessionContext', ...
+        struct('cell_name',   char(string(cellName)), ...
+               'block_index', blockIndex, ...
+               'block_label', char(string(label)), ...
+               'leds',        leds));
 end
 
 
