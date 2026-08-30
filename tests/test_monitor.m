@@ -67,6 +67,16 @@ function test_monitor()
     assert(isequal(ledTbl.Data, [0.75 0 0; 0 0 1; 0 0 0; 1 0 0]), 'the LED grid is shown');
     assert(lbl('mode 2 (video RGB)') && lbl('COM3'), 'with its mode and port');
 
+    % ---- per-phase LED reports drive the readout ([] / absent = leave it alone) ----
+    mon.update('report', struct('phase', 'prestim', 'phaseElapsed', 0, 'phaseTotal', 2, ...
+        'leds', [0 0 0.25; 0 0 0; 0 0 0; 0 0 0]));
+    assert(isequal(ledTbl.Data, [0 0 0.25; 0 0 0; 0 0 0; 0 0 0]), ...
+        'a phase report carrying an LED grid updates the readout');
+    mon.update('report', struct('phase', 'presenting', 'phaseElapsed', 1, 'phaseTotal', 10.0833, ...
+        'stim', si, 'leds', []));
+    assert(isequal(ledTbl.Data, [0 0 0.25; 0 0 0; 0 0 0; 0 0 0]), ...
+        'an empty leds field (grid left alone) leaves the readout as it was');
+
     % ---- finish ----
     mon.update('finish', struct('cancelled', true, 'epochs', 2, 'totalEpochs', 5, 'done', true));
     assert(lbl('CANCELLED') && lbl('Cancelled after 2 of 5 epoch(s).'), 'a cancelled run says so');
@@ -80,6 +90,23 @@ function test_monitor()
     % 5 x (1 + 2 + 20 + 1 + 3) = 135 s
     assert(local_hasLabel(mon2.fig, 'planned total 02:15'), ...
         'a real 10 s -> 20 s correction redraws the timeline');
+
+    % ---- LED driver OFF: the readout shows the PLAN and says the hardware is untouched ----
+    mon5 = stimulusMonitor();
+    c5 = onCleanup(@() mon5.close());
+    planOff = plan;
+    planOff.leds.enabled = false;
+    mon5.update('begin', planOff);
+    t5 = findall(mon5.fig, 'Type', 'uitable');
+    led5 = t5(arrayfun(@(t) isequal(size(t.Data), [4 3]), t5));
+    assert(isequal(led5.Data, planOff.leds.intensity), ...
+        'driver off: the planned grid still shows (not forced to zeros)');
+    assert(local_hasLabel(mon5.fig, 'LEDs untouched'), ...
+        'driver off: the label says the hardware is untouched');
+    mon5.update('report', struct('phase', 'prestim', 'phaseElapsed', 0, 'phaseTotal', 2, ...
+        'leds', [0 0 0; 0 0.5 0; 0 0 0; 0 0 0]));
+    assert(isequal(led5.Data, [0 0 0; 0 0.5 0; 0 0 0; 0 0 0]), ...
+        'driver off: per-phase reports still update the plan view');
 
     % ---- embedded mode: builds into a host panel, never owns/kills the window ----
     hostFig = uifigure('Name', 'embed host', 'Position', [100 100 520 900]);

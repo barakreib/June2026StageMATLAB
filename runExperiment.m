@@ -572,6 +572,8 @@ function local_applyBackdrop(phases, which, what)
     grid = subsref_default(cfg, 'ledGrid', []);
     if ~isempty(grid)
         ledSession('apply', grid);
+        % tell the monitor's LED readout ([] = LEDs left alone -> nothing to report)
+        stimProgress('report', struct('leds', grid));
     end
 end
 

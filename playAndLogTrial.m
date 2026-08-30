@@ -142,15 +142,19 @@ function local_awaitPresentation(durS, record, refresh, totalFrames, phases)
         end
         if el >= durS, break; end
         if attached
+            % 'leds' = the grid in force for THIS phase ([] = left alone), so the
+            % monitor's LED readout follows the phases instead of freezing on the
+            % run-level grid. Display only -- the application above is unconditional.
             stimProgress('report', struct('phase', ph(idx).name, ...
                 'phaseElapsed', el - ph(idx).startS, 'phaseTotal', ph(idx).durS, ...
-                'stim', info));
+                'stim', info, 'leds', ph(idx).leds));
         end
         pause(min(0.05, durS - el));
     end
     if attached
         stimProgress('report', struct('phase', ph(end).name, ...
-            'phaseElapsed', ph(end).durS, 'phaseTotal', ph(end).durS, 'stim', info));
+            'phaseElapsed', ph(end).durS, 'phaseTotal', ph(end).durS, ...
+            'stim', info, 'leds', ph(end).leds));
     end
 end
 

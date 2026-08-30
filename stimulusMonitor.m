@@ -198,6 +198,10 @@ function mon = stimulusMonitor(parent)
     function onReport(msg)
         measureOverhead(msg);
         S.state = local_merge(S.state, msg);
+        % per-phase LED readout: playAndLogTrial / runExperiment attach the grid now in
+        % force to their reports ([] or absent = leave the display as it is)
+        L = local_field(msg, 'leds', []);
+        if ~isempty(L), drawLedGrid(L); end
         % The plan can only ESTIMATE the presentation length (stimFrames/refreshRate); the
         % stimuli append a few black frames. The first real presentation reports the true
         % duration, so redraw the timeline once against it and let it be accurate from then
@@ -410,20 +414,28 @@ function mon = stimulusMonitor(parent)
     end
 
     function drawLeds(L)
+        % The grid shows the values regardless of the driver state -- with the driver
+        % OFF they are the PLAN (per-phase updates included), and the label says the
+        % hardware is untouched, so a dry run at a desk still shows the LED schedule.
         if ~isstruct(L) || ~local_field(L, 'enabled', false)
-            h.ledLbl.Text      = 'LED driver OFF for this run -- the LEDs are left untouched.';
+            h.ledLbl.Text      = 'LED driver OFF -- values are the plan; LEDs untouched.';
             h.ledLbl.FontColor = [0.45 0.45 0.45];
-            h.ledTbl.Data      = zeros(4, 3);
-            return;
+        else
+            md = local_field(L, 'mode', 2);
+            h.ledLbl.Text      = sprintf('mode %d (%s)   port %s', md, local_modeName(md), ...
+                                         char(string(local_field(L, 'port', '?'))));
+            h.ledLbl.FontColor = [0.13 0.45 0.20];
         end
-        md = local_field(L, 'mode', 2);
-        h.ledLbl.Text      = sprintf('mode %d (%s)   port %s', md, local_modeName(md), ...
-                                     char(string(local_field(L, 'port', '?'))));
-        h.ledLbl.FontColor = [0.13 0.45 0.20];
-        I = local_field(L, 'intensity', zeros(4, 3));
+        drawLedGrid(local_field(L, 'intensity', zeros(4, 3)));
+    end
+
+    function drawLedGrid(I)
+        % Just the 4x3 values (phase reports land here at up to 20 Hz -- only touch the
+        % table when the grid actually changed).
         if iscell(I), I = cell2mat(I); end
         if ~isequal(size(I), [4 3]), I = zeros(4, 3); end
-        h.ledTbl.Data = double(I);
+        I = double(I);
+        if ~isequal(h.ledTbl.Data, I), h.ledTbl.Data = I; end
     end
 
     function el = local_runElapsed()

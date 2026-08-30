@@ -1306,7 +1306,11 @@ function stimulusGUI(mode)
 
     function lockUI()
         c = findall(h.fig, '-property', 'Enable', '-not', 'Type', 'uilabel');
-        c = c(arrayfun(@(x) ~isequal(x, h.cancelBtn), c));
+        % The embedded Session monitor is read-only display: leave it LIVE, or the whole
+        % right panel (timeline, phase/progress text, LED readout) greys out mid-run --
+        % exactly when the operator needs to read it. Run/Cancel sit OUTSIDE h.monPanel.
+        mon = findall(h.monPanel, '-property', 'Enable');
+        c = c(arrayfun(@(x) ~isequal(x, h.cancelBtn) && ~any(mon == x), c));
         h.lockList  = c;
         h.lockState = arrayfun(@(x) string(x.Enable), c);
         set(c, 'Enable', 'off');

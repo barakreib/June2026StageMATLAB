@@ -50,10 +50,19 @@ function test_gui_lock()
         'the planned presentation seconds (600/60) go with the protocol, for the timeline');
 
     % ---- locked state, sampled from inside the run ----
+    % Cancel is the only live control OUTSIDE the Session monitor; the monitor itself
+    % (read-only display: timeline, phase text, LED readout) deliberately stays live so
+    % it does not grey out exactly when the operator needs to read it.
     assert(~isempty(snap), 'the sampler ran while the run held the thread');
+    monPanel = findall(fig, 'Type', 'uipanel', 'Title', 'Session monitor');
+    monCtrls = findall(monPanel, '-property', 'Enable');
     live = snap.ctrls(strcmp(snap.enable, 'on'));
-    assert(isscalar(live) && isequal(live, cancelBtn), ...
-        sprintf('exactly ONE control was live mid-run, and it was Cancel (got %d)', numel(live)));
+    outside = live(arrayfun(@(x) ~any(monCtrls == x), live));
+    assert(isscalar(outside) && isequal(outside, cancelBtn), ...
+        sprintf(['exactly ONE control outside the monitor was live mid-run, and it was ' ...
+                 'Cancel (got %d)'], numel(outside)));
+    inMon = live(arrayfun(@(x) any(monCtrls == x), live));
+    assert(~isempty(inMon), 'the Session monitor stayed live (not greyed) during the run');
     assert(strcmp(snap.monAttached, 'yes'), 'the monitor was attached to stimProgress for the run');
 
     % ---- and everything restored afterwards ----
