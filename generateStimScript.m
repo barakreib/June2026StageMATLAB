@@ -423,12 +423,13 @@ function local_emitGauss(add, entry, m)
     add('    noiseVals = mu + sigma .* (sqrt(2) .* erfinv(2 .* rand(stream, checksY, checksX, nUpdates) - 1));');
     add('    noiseVals = min(max(noiseVals, 0), 1);');
     add();
-    add('    %% optional troubleshooting dump (rig_config: "debug_values_csv": true)');
+    add('    %% optional troubleshooting dump (rig_config: "debug_values_csv": true):');
+    add('    %% intended vs gamma-corrected sent values, stimulus LED grid in the header');
     add('    if loadRigConfig(''debug_values_csv'', false)');
     if entry.iso
-        add('        writeStimValuesCsv(pwd, ''%s'', seed, struct(''R'', noiseVals, ''G'', 1 - noiseVals));', entry.fn);
+        add('        writeStimValuesCsv(pwd, ''%s'', seed, struct(''R'', noiseVals, ''G'', 1 - noiseVals), stimLeds);', entry.fn);
     else
-        add('        writeStimValuesCsv(pwd, ''%s'', seed, struct(''grey'', noiseVals));', entry.fn);
+        add('        writeStimValuesCsv(pwd, ''%s'', seed, struct(''grey'', noiseVals), stimLeds);', entry.fn);
     end
     add('    end');
     add();
