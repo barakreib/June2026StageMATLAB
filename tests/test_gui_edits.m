@@ -78,8 +78,10 @@ function test_gui_edits()
     assert(isequal(find(hasHi(:))', [2 5]), ...
         sprintf('only epochs 2 and 5 changed (changed: %s)', mat2str(find(hasHi(:))')));
     seedCol = find(strcmp(proto.ColumnName, 'seed'), 1);
-    assert(~isempty(seedCol) && isequal(cellfun(@str2double, d(:, seedCol))', 2:7), ...
-        'every epoch carries its own auto-assigned seed (2..7)');
+    sd6 = cellfun(@str2double, d(:, seedCol))';
+    assert(~isempty(seedCol) && numel(unique(sd6)) == 6 && ...
+           all(sd6 >= 1 & sd6 <= 1e6 & sd6 == round(sd6)), ...
+        'every epoch carries its own auto-assigned RANDOM seed (distinct, in [1, 1e6])');
     assert(isequal(proto.Selection(:)', [2 5]), 'the selection survives the edit');
     assert(local_hasLabel(mf, '6 epoch(s) planned'), 'the preview still shows 6 epochs');
 
@@ -103,10 +105,11 @@ function test_gui_edits()
     d2 = proto.Data;
     assert(strcmp(d2{3, muCol}, '0.7') && strcmp(d2{2, muCol}, '0.5') && size(d2, 1) == 6, ...
         'a cell edit changes only its epoch');
+    s3before = d2{3, seedCol};
     evt = struct('Indices', [4 seedCol], 'NewData', '99');
     proto.CellEditCallback(proto, evt);
     d2 = proto.Data;
-    assert(strcmp(d2{4, seedCol}, '99') && strcmp(d2{3, seedCol}, '4'), ...
+    assert(strcmp(d2{4, seedCol}, '99') && strcmp(d2{3, seedCol}, s3before), ...
         'a seed edit changes only its epoch''s seed');
 
     % ---- screens & LEDs band: R/G tables + the GLOBAL B column (no per-phase B) ----
@@ -135,27 +138,6 @@ function test_gui_edits()
     preGrid.CellEditCallback(preGrid, evt);
     assert(abs(preGrid.Data(1, 1) - 0.7) < 1e-9, 'R/G cells edit + clamp normally');
 
-    % ---- "link with": arm on pre, click post -> the two grids stay identical ----
-    lkPre  = findall(fig, 'Tag', 'phLink_pre');
-    lkPost = findall(fig, 'Tag', 'phLink_post');
-    lkPre.Value = true;
-    lkPre.ValueChangedFcn(lkPre, []);
-    assert(strcmp(lkPost.Text, 'click me'), 'arming a link invites a click on the other tables');
-    postGrid.ClickedFcn(postGrid, []);                     % click the post table = link to it
-    assert(strcmp(lkPre.Text, 'linked w post') && strcmp(lkPost.Text, 'linked w pre'), ...
-        'both sections show who they are linked with');
-    assert(isequal(preGrid.Data, postGrid.Data), 'linking adopts the CLICKED table''s values');
-    evt = struct('Indices', [2 2], 'NewData', 0.33);
-    preGrid.CellEditCallback(preGrid, evt);
-    assert(abs(postGrid.Data(2, 2) - 0.33) < 1e-9, 'editing one linked table updates the other');
-    lkPre.Value = false;
-    lkPre.ValueChangedFcn(lkPre, []);
-    assert(strcmp(lkPre.Text, 'link with') && strcmp(lkPost.Text, 'link with') && ~lkPost.Value, ...
-        'unlinking one member dissolves a two-table group');
-    evt = struct('Indices', [2 2], 'NewData', 0.9);
-    preGrid.CellEditCallback(preGrid, evt);
-    assert(abs(postGrid.Data(2, 2) - 0.33) < 1e-9, 'after unlinking, edits stay local');
-
     % ---- RGBval column: numeric rows clamp, the swatch row stays empty ----
     scr = findall(fig, 'Tag', 'phScr_pre');
     assert(~isempty(scr) && strcmp(scr.ColumnName{1}, 'RGBval'), 'RGBval column is a one-column table');
@@ -166,6 +148,35 @@ function test_gui_edits()
     assert(abs(scr.Data{1} - 0.5) < 1e-9 && abs(scr.Data{2} - 1) < 1e-9, ...
         'screen R/G/B rows take values and clamp to [0,1]');
     assert(isempty(scr.Data{4}) || strcmp(scr.Data{4}, ''), 'the swatch cell carries no text');
+
+    % ---- "link values": toggle sections into ONE linked set; values + RGBval shared ----
+    lb = findall(fig, 'Type', 'uibutton', 'Text', 'link values');
+    assert(~isempty(lb), 'the link values button exists');
+    assert(isempty(findall(fig, 'Type', 'uicheckbox', 'Text', 'link with')), ...
+        'the per-section link checkboxes are gone');
+    lb.ButtonPushedFcn(lb, []);                            % enter link mode
+    assert(strcmp(lb.Text, 'done linking'), 'the button flips to done linking');
+    assert(~isempty(preGrid.StyleConfigurations), 'eligible sections highlight while linking');
+    preGrid.ClickedFcn(preGrid, []);                       % toggle pre IN
+    postGrid.ClickedFcn(postGrid, []);                     % toggle post IN (adopts pre's values)
+    assert(isequal(postGrid.Data, preGrid.Data), 'a section joining the set adopts its values');
+    scrPost = findall(fig, 'Tag', 'phScr_post');
+    assert(abs(scrPost.Data{1} - scr.Data{1}) < 1e-9, 'joining adopts the RGBval too');
+    lb.ButtonPushedFcn(lb, []);                            % done linking
+    assert(strcmp(lb.Text, 'link values'), 'the button flips back');
+    evt = struct('Indices', [2 2], 'NewData', 0.33);
+    preGrid.CellEditCallback(preGrid, evt);
+    assert(abs(postGrid.Data(2, 2) - 0.33) < 1e-9, 'editing one linked table updates the other');
+    evt = struct('Indices', [2 1], 'NewData', 0.6);
+    scr.CellEditCallback(scr, evt);
+    assert(abs(scrPost.Data{2} - 0.6) < 1e-9, 'linked sections share the full-screen RGBval too');
+    lb.ButtonPushedFcn(lb, []);                            % re-enter, toggle post OUT
+    postGrid.ClickedFcn(postGrid, []);
+    lb.ButtonPushedFcn(lb, []);                            % done: a set of one dissolves
+    evt = struct('Indices', [2 2], 'NewData', 0.9);
+    preGrid.CellEditCallback(preGrid, evt);
+    assert(abs(postGrid.Data(2, 2) - 0.33) < 1e-9, 'after unlinking, edits stay local');
+    assert(isempty(preGrid.StyleConfigurations), 'no highlight lingers outside link mode');
 
     fprintf('[gui edits] buttons gated, per-epoch update, cell edits, band, live preview -- PASS\n');
 end

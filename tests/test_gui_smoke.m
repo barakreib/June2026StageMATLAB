@@ -75,15 +75,17 @@ function test_gui_smoke()
     sdCol = find(strcmp(proto.ColumnName, 'seed'), 1);
     assert(strcmp(proto.Data{1, sfCol}, '450') && strcmp(proto.Data{1, muCol}, '0.4'), ...
         'the synced frame count and edited mu reach the protocol');
-    assert(isequal(cellfun(@str2double, proto.Data(:, sdCol))', 2:6), ...
-        'five fresh per-epoch seeds, 2..6');
+    seeds5 = cellfun(@str2double, proto.Data(:, sdCol))';
+    assert(numel(unique(seeds5)) == 5 && all(seeds5 >= 1 & seeds5 <= 1e6 & seeds5 == round(seeds5)), ...
+        'five fresh per-epoch seeds: distinct random integers in [1, 1e6]');
 
     % ---- a second block of the SAME stimulus keeps numbering global + seeds fresh ----
     epochsFld.Value = 2;
     add.ButtonPushedFcn(add, []);
     assert(size(proto.Data, 1) == 7 && str2double(proto.Data{7, 1}) == 7, '2 more epochs -> rows 6 and 7');
-    assert(isequal(cellfun(@str2double, proto.Data(:, sdCol))', 2:8), ...
-        'the new block''s seeds continue past the highest');
+    seeds7 = cellfun(@str2double, proto.Data(:, sdCol))';
+    assert(isequal(seeds7(1:5), seeds5) && numel(unique(seeds7)) == 7, ...
+        'the new block''s seeds are fresh and the existing ones are untouched');
 
     % ---- Remove epoch takes one row off its own block ----
     proto.Selection = 7;
@@ -101,6 +103,7 @@ function test_gui_smoke()
     assert(strcmp(lst.Value, 'Greyscale Gaussian noise (full field)'), 'and its stimulus is selected');
 
     % ---- edit up top, then Apply params to selected rewrites JUST those rows ----
+    seedsBefore = cellfun(@str2double, proto.Data(:, sdCol))';
     pTbl.Data{find(strcmp(n2, 'mu'), 1), 2} = '0.25';
     d2 = find(strcmp(n2, 'duration (s)'), 1);
     pTbl.Data{d2, 2} = '2';
@@ -112,9 +115,19 @@ function test_gui_smoke()
         'the edited parameters landed on the selected epochs');
     assert(strcmp(proto.Data{3, muCol}, '0.4') && strcmp(proto.Data{6, sfCol}, '450'), ...
         'unselected epochs were left alone');
-    assert(isequal(cellfun(@str2double, proto.Data(:, sdCol))', 2:7), ...
+    assert(isequal(cellfun(@str2double, proto.Data(:, sdCol))', seedsBefore), ...
         'every epoch kept its own seed through the bulk edit');
     assert(isequal(proto.Selection(:)', [1 2]), 'the selection survives the update');
+
+    % ---- last-used parameters are remembered PER STIMULUS TYPE ----
+    lst.Value = 'Greyscale full-field flicker';
+    lst.ValueChangedFcn(lst, []);
+    lst.Value = 'Greyscale Gaussian noise (full field)';
+    lst.ValueChangedFcn(lst, []);
+    n3 = pTbl.Data(:, 1);
+    assert(strcmp(pTbl.Data{find(strcmp(n3, 'mu'), 1), 2}, '0.25') && ...
+           strcmp(pTbl.Data{find(strcmp(n3, 'stimFrames'), 1), 2}, '180'), ...
+        'switching away and back restores the last-used parameters for that stimulus');
 
     % ---- Cancel / Run idle state ----
     cb = btn('Cancel');

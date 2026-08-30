@@ -64,10 +64,11 @@ function stimulusGUI(mode)
 % run — never between epochs, even when they carry different parameters. Discard removes
 % every epoch of the run from the manifest and marks their .abf files to skip on import.
 %
-% Seeds are PER EPOCH: every Gaussian epoch carries its own seed (auto-assigned +1 past
-% the highest in use, editable in the table's seed column), so repeated epochs are
-% INDEPENDENT noise. Each epoch's seed is recorded in the day's stim manifest and in the
-% values CSV when the debug dump is on. To add or edit a stimulus, edit stimRegistry.m.
+% Seeds are PER EPOCH: every Gaussian epoch carries its own seed (auto-assigned as a
+% fresh RANDOM integer in [1, 1e6], distinct from every seed already in the protocol;
+% editable in the table's seed column), so repeated epochs are INDEPENDENT noise. Each
+% epoch's seed is recorded in the day's stim manifest and in the values CSV when the
+% debug dump is on. To add or edit a stimulus, edit stimRegistry.m.
 %
 % The SESSION MONITOR is embedded in this window (right panel) — epoch progress, phase
 % clock, stimulus numbers, LED state, and the whole-session timeline. ONE window, ONE
@@ -80,12 +81,16 @@ function stimulusGUI(mode)
 % channel is GLOBAL: the far-right B column drives every phase's B (it carries the
 % sync/photodiode light, so it never varies by phase). LED row names show once, on the
 % pre-stim table; DOUBLE-CLICK a row name to rename that LED everywhere (saved to
-% rig_config `led_names`). "link with" (above each screen phase's table): tick it, then
-% click another LED table — the linked tables share one set of values from then on
-% (editing any one edits them all; untick to unlink). "Set now"/"Off now" above the
-% stimulus table push that grid (+ global B) to the rig immediately. An all-dark "end of
-% stim" grid = the classic dark+close LED teardown; anything lit there stays ON after
-% the run (driver handed off as base `rig`).
+% rig_config `led_names`). "link values" (top left of the band): press it, click phase
+% sections to toggle them into or out of the ONE linked set (they highlight while
+% linking), then press "done linking" — linked sections share BOTH the LED R/G grid and
+% the full-screen RGBval (editing any one edits them all; a section joining the set
+% adopts its values), and a line under the band shows which sections are linked.
+% "Set now"/"Off now" beside the stimulus title push that grid (+ global B) to the rig
+% immediately. Stimulus parameters are remembered PER STIMULUS TYPE (last-used values
+% come back when a stimulus is re-selected, and across sessions via the saved state).
+% An all-dark "end of stim" grid = the classic dark+close LED teardown; anything lit
+% there stays ON after the run (driver handed off as base `rig`).
 
     if nargin >= 1 && ischar(mode) && strcmp(mode, '__selftest__')
         selftest();
@@ -108,8 +113,10 @@ function stimulusGUI(mode)
     cancelRequested = false;   % set by the Cancel button, polled by runExperiment (see onCancel)
     suspendSelCb    = false;   % re-entrancy guard while the epoch table's Selection is set in code
     monitor         = [];      % the live "Session monitor" window (stimulusMonitor)
-    linkGroup = struct('pre', 0, 'post', 0, 'iti', 0, 'final', 0);  % LED-table link groups (0 = unlinked)
-    linkPick  = '';            % section whose "link with" tick is waiting for a partner click
+    linkOn   = struct('pre', false, 'post', false, 'iti', false, 'final', false);  % the ONE linked set
+    linkMode = false;          % true while "link values" is armed (clicks toggle membership)
+    lastParams = struct();     % per-stimulus last-used parameters (fn name -> params struct)
+    suppressRemember = false;  % set while loadState drives the list, so restoring never clobbers
 
     buildUI();
     openMonitor();      % the embedded Session monitor (right panel) + its stimProgress hooks
@@ -141,11 +148,8 @@ function stimulusGUI(mode)
         lc.Padding    = [0 0 0 0];
         lc.RowSpacing = 6;
         lp = uipanel(lc, 'Title', 'Stimuli');
-        lg = uigridlayout(lp, [2 1]); lg.RowHeight = {'1x', 34}; lg.RowSpacing = 2;
+        lg = uigridlayout(lp, [1 1]);
         h.list = uilistbox(lg, 'Items', {reg.name}, 'ValueChangedFcn', @(s,e) onSelectStim());
-        lb = uigridlayout(lg, [1 2]); lb.Padding = [0 0 0 0]; lb.ColumnSpacing = 4;
-        h.saveBtn = uibutton(lb, 'Text', 'Save...', 'ButtonPushedFcn', @(s,e) onSave());
-        h.loadBtn = uibutton(lb, 'Text', 'Load...', 'ButtonPushedFcn', @(s,e) onLoad());
         buildQuickLoad(lc);
 
         % ---------------- middle: the protocol builder ----------------
@@ -205,7 +209,7 @@ function stimulusGUI(mode)
             'CellEditCallback', @(s, e) onEpochCellEdit(e));
 
         % Row operations sit with the rows they act on, under the table.
-        tb = uigridlayout(rp, [1 4]); tb.ColumnWidth = {170, 130, 110, '1x'};
+        tb = uigridlayout(rp, [1 6]); tb.ColumnWidth = {170, 130, 110, '1x', 88, 88};
         tb.Padding = [6 2 6 2]; tb.ColumnSpacing = 8;
         h.updSelBtn = uibutton(tb, 'Text', 'Apply params to selected', 'ButtonPushedFcn', @(s,e) onUpdateSelected(), ...
             'Tooltip', ['Apply the parameters and label above to JUST the selected epoch(s) ' ...
@@ -216,8 +220,10 @@ function stimulusGUI(mode)
             'Tooltip', 'Drop the selected epoch. Removing a block''s last epoch removes the block.');
         h.clearBtn = uibutton(tb, 'Text', 'Clear all', 'ButtonPushedFcn', @(s,e) onClearAll(), ...
             'Tooltip', 'Empty the protocol and start over (asks first).');
-        uilabel(tb, 'Text', 'Edit cells directly, or select rows and apply the panel above.', ...
+        uilabel(tb, 'Text', 'Edit cells directly, or select rows + apply above.', ...
             'FontAngle', 'italic', 'FontColor', [0.45 0.45 0.45]);
+        h.saveBtn = uibutton(tb, 'Text', 'Save...', 'ButtonPushedFcn', @(s,e) onSave());
+        h.loadBtn = uibutton(tb, 'Text', 'Load...', 'ButtonPushedFcn', @(s,e) onLoad());
 
         % ---------------- right: the Session monitor + Run/Cancel under it ----------------
         rc = uigridlayout(top, [2 1]);
@@ -312,22 +318,30 @@ function stimulusGUI(mode)
 
     function buildPhaseBand(parent)
         % The screens-&-LEDs band: one section per phase -- pre-stim | stimulus |
-        % post-stimulus | inter-stim | end of stim -- each with a preset dropdown, a
-        % "link with" checkbox (tick + click another table to keep two grids identical;
-        % the stimulus section has the Set now / Off now quick-set buttons there
-        % instead), its R/G LED duty table, and (except "stimulus", whose screen IS the
-        % stimulus) the RGBval column. The far right holds the GLOBAL B column, which
-        % drives every phase's B channel.
+        % post-stimulus | inter-stim | end of stim -- each with a preset dropdown, its
+        % R/G LED duty table, and (except "stimulus", whose screen IS the stimulus) the
+        % RGBval column. The far right holds the GLOBAL B column, which drives every
+        % phase's B channel. "link values" (top left) links whole sections: while
+        % linking, click sections to toggle them in and out of the linked set; a line
+        % under the band shows which sections are linked (they share LED R/G AND RGBval;
+        % editing any one edits them all).
         band = uipanel(parent, 'Title', ...
             'Screens & LEDs  (LED duty + screen RGB are linear 0..1; screens exclude the sync bar)');
-        bgl = uigridlayout(band, [2 1]);
-        bgl.RowHeight  = {26, '1x'};
+        bgl = uigridlayout(band, [3 1]);
+        bgl.RowHeight  = {26, '1x', 22};
         bgl.Padding    = [6 2 6 2];
         bgl.RowSpacing = 2;
 
-        % --- strip: just the status line (driver mode/port live in Settings; the
-        %     Set now / Off now quick-set buttons sit above the stimulus LED table) ---
-        h.ledStatus = uilabel(bgl, 'Text', '', 'FontAngle', 'italic', ...
+        % --- strip: the link-mode button + the status line ---
+        st = uigridlayout(bgl, [1 2]);
+        st.ColumnWidth = {110, '1x'};
+        st.Padding = [0 0 0 0]; st.ColumnSpacing = 8;
+        h.linkBtn = uibutton(st, 'Text', 'link values', 'ButtonPushedFcn', @(s, e) onLinkMode(), ...
+            'Tooltip', ['Link phase sections so they share ONE set of values (LED R/G and the ' ...
+                        'full-screen RGBval): press, click sections to toggle them into or out ' ...
+                        'of the linked set, then press "done linking". The line under the band ' ...
+                        'shows what is linked.']);
+        h.ledStatus = uilabel(st, 'Text', '', 'FontAngle', 'italic', ...
             'FontColor', [0.45 0.45 0.45], 'HorizontalAlignment', 'right');
         % (The B channel is ALWAYS global -- the far-right B column drives every phase.)
 
@@ -335,13 +349,24 @@ function stimulusGUI(mode)
         sc = uigridlayout(bgl, [1 7]);
         sc.ColumnWidth   = {'fit', 'fit', 'fit', 'fit', 'fit', 'fit', '1x'};
         sc.Padding       = [0 0 0 0];
-        sc.ColumnSpacing = 10;
-        buildPhaseSection(sc, 'pre',   'pre-stim',      2);
-        buildPhaseSection(sc, 'stim',  'stimulus',     []);
-        buildPhaseSection(sc, 'post',  'post-stimulus', 1);
-        buildPhaseSection(sc, 'iti',   'inter-stim',    3);
-        buildPhaseSection(sc, 'final', 'end of stim',  []);
+        sc.ColumnSpacing = 8;
+        % Grid children never report a usable Position in uifigures, so each section
+        % hands back its fixed width + LED-table center and the band accumulates the
+        % x of every table -- that is where the link line puts its dots.
+        x = 0;
+        for kk = {{'pre', 'pre-stim', 2}, {'stim', 'stimulus', []}, ...
+                  {'post', 'post-stimulus', 1}, {'iti', 'inter-stim', 3}, ...
+                  {'final', 'end of stim', []}}
+            [secW, tblCx] = buildPhaseSection(sc, kk{1}{1}, kk{1}{2}, kk{1}{3});
+            h.linkX.(kk{1}{1}) = x + tblCx;
+            x = x + secW + sc.ColumnSpacing;
+        end
         buildMasterB(sc);
+
+        % --- the link line: drawn under the linked sections (absolutely-positioned
+        %     mini-panels in a plain container -- no axes coordinate quirks) ---
+        h.linkStrip = uipanel(bgl, 'BorderType', 'none', 'AutoResizeChildren', 'off');
+
         % duration aliases: the rest of the GUI (gatherOpts, loaders, the monitor plan)
         % keeps its long-standing handle names
         h.preStim  = h.phDur.pre;
@@ -349,46 +374,42 @@ function stimulusGUI(mode)
         h.itp      = h.phDur.iti;
     end
 
-    function buildPhaseSection(parent, key, ttl, durDefault)
-        % Each section, top to bottom: title (+duration), preset dropdown, a link row
-        % ("link with" checkbox -- the stimulus section carries the Set now / Off now
-        % quick-set buttons there instead), then the LED table -- R and G only (B is
-        % GLOBAL, the far-right column). Every phase but the stimulus also gets an
-        % RGBval column: a one-column TABLE (rows 1-3 = the full-screen R/G/B, row 4 =
-        % the color-picker swatch cell), so its header and rows align pixel-for-pixel
-        % with the LED table's. LED row names show ONCE, on the pre-stim table
-        % (double-click a name there to rename that LED everywhere).
+    function [secW, tblCx] = buildPhaseSection(parent, key, ttl, durDefault)
+        % Each section, top to bottom: title (+duration; the stimulus section carries
+        % the Set now / Off now quick-set buttons there), preset dropdown, then the LED
+        % table -- R and G only (B is GLOBAL, the far-right column). Every phase but
+        % the stimulus also gets an RGBval column: a one-column TABLE (rows 1-3 = the
+        % full-screen R/G/B, row 4 = the color-picker swatch cell), so its header and
+        % rows align pixel-for-pixel with the LED table's. LED row names show ONCE, on
+        % the pre-stim table (double-click a name there to rename that LED everywhere).
         hasScreen = ~strcmp(key, 'stim');
         hasNames  = strcmp(key, 'pre');
-        sg = uigridlayout(parent, [4 1]);
-        sg.RowHeight  = {26, 24, 20, 124};
+        sg = uigridlayout(parent, [3 1]);
+        sg.RowHeight  = {26, 24, 124};
         sg.Padding    = [0 0 0 0];
         sg.RowSpacing = 2;
-        % title (+ its duration, for the phases that have one)
-        tr = uigridlayout(sg, [1 4]);
-        tr.ColumnWidth = {'fit', '1x', 'fit', 52};
-        tr.Padding = [2 0 2 0]; tr.ColumnSpacing = 4;
-        uilabel(tr, 'Text', ttl, 'FontWeight', 'bold');
-        uilabel(tr, 'Text', '');
-        if ~isempty(durDefault)
-            uilabel(tr, 'Text', 's:');
-            h.phDur.(key) = uieditfield(tr, 'numeric', 'Value', durDefault, 'Limits', [0 Inf], ...
-                'ValueChangedFcn', @(s, e) pushPreview(), ...
-                'Tooltip', sprintf('Duration of the %s phase in seconds.', ttl));
-        end
-        h.phPreset.(key) = uidropdown(sg, 'Items', local_presetNames(presets), ...
-            'Tag', ['phPreset_' key], 'ValueChangedFcn', @(s, e) onPhasePreset(key), ...
-            'Tooltip', 'Fill this LED grid from a rig_config.json preset (its B column fills the global B).');
+        % title (+ its duration, for the phases that have one; quick-set for stimulus)
         if hasScreen
-            % link row: tick, then click another LED table to keep the two identical
-            h.phLink.(key) = uicheckbox(sg, 'Text', 'link with', 'Value', false, 'FontSize', 10, ...
-                'Tag', ['phLink_' key], 'ValueChangedFcn', @(s, e) onLinkToggle(key), ...
-                'Tooltip', ['Tick, then CLICK another LED table to link the two: linked tables ' ...
-                            'share one set of values (editing any one changes them all). ' ...
-                            'The clicked table''s values win at link time. Untick to unlink.']);
+            tr = uigridlayout(sg, [1 4]);
+            tr.ColumnWidth = {'fit', '1x', 'fit', 52};
+            tr.Padding = [2 0 2 0]; tr.ColumnSpacing = 4;
+            uilabel(tr, 'Text', ttl, 'FontWeight', 'bold');
+            uilabel(tr, 'Text', '');
+            if ~isempty(durDefault)
+                uilabel(tr, 'Text', 's:');
+                h.phDur.(key) = uieditfield(tr, 'numeric', 'Value', durDefault, 'Limits', [0 Inf], ...
+                    'ValueChangedFcn', @(s, e) pushPreview(), ...
+                    'Tooltip', sprintf('Duration of the %s phase in seconds.', ttl));
+            end
         else
-            % the stimulus section: quick-set buttons directly above its LED table
-            qs = uigridlayout(sg, [1 2]); qs.Padding = [0 0 0 0]; qs.ColumnSpacing = 3;
+            tr = uigridlayout(sg, [1 3]);
+            tr.ColumnWidth = {'fit', '1x', 108};   % header must not out-grow the table
+                                                   % below, or the 'fit' section widens
+                                                   % and the link line's x math drifts
+            tr.Padding = [2 0 2 0]; tr.ColumnSpacing = 4;
+            uilabel(tr, 'Text', ttl, 'FontWeight', 'bold');
+            uilabel(tr, 'Text', '');
+            qs = uigridlayout(tr, [1 2]); qs.Padding = [0 0 0 0]; qs.ColumnSpacing = 3;
             h.ledSetNow = uibutton(qs, 'Text', 'Set now', 'FontSize', 10, ...
                 'ButtonPushedFcn', @(s,e) onLedSetNow(), ...
                 'Tooltip', ['Quick set: push THIS stimulus grid (R/G below + the global B ' ...
@@ -398,14 +419,22 @@ function stimulusGUI(mode)
                 'ButtonPushedFcn', @(s,e) onLedOffNow(), ...
                 'Tooltip', 'Quick set: mode 0 (all LEDs dark) immediately. Grid values are kept.');
         end
-        if hasNames, tw = 178; else, tw = 116; end     % pre carries the LED-name gutter
+        h.phPreset.(key) = uidropdown(sg, 'Items', local_presetNames(presets), ...
+            'Tag', ['phPreset_' key], 'ValueChangedFcn', @(s, e) onPhasePreset(key), ...
+            'Tooltip', 'Fill this LED grid from a rig_config.json preset (its B column fills the global B).');
+        % Widths are chosen so the WHOLE band fits its panel: an overflowing
+        % uigridlayout silently shrinks every fixed column, which both squeezes the
+        % tables and breaks the link line's analytic x positions.
+        if hasNames, tw = 170; else, tw = 112; end     % pre carries the LED-name gutter
+        secW  = tw + 3 + 64;                           % table + spacing + RGBval column
+        tblCx = tw / 2;                                % the LED table's center within the section
         if hasScreen
             cg = uigridlayout(sg, [1 2]);
-            cg.ColumnWidth = {tw, 70};
+            cg.ColumnWidth = {tw, 64};
             cg.Padding = [0 0 0 0]; cg.ColumnSpacing = 3;
         else
             cg = uigridlayout(sg, [1 1]);
-            cg.ColumnWidth = {tw + 3 + 70};   % table EXPANDS over the (absent) RGBval slot
+            cg.ColumnWidth = {tw + 3 + 64};   % table EXPANDS over the (absent) RGBval slot
             cg.Padding = [0 0 0 0];
         end
         if hasNames, rn = ledNames; else, rn = {}; end
@@ -435,13 +464,12 @@ function stimulusGUI(mode)
         % channel of EVERY phase (it carries the sync/photodiode light, which never
         % varies by phase). The table sits in a fixed-width cell exactly as wide as its
         % one column, so there is no dead black strip to its right.
-        mg = uigridlayout(parent, [4 1]);
-        mg.RowHeight  = {26, 24, 20, 124};
+        mg = uigridlayout(parent, [3 1]);
+        mg.RowHeight  = {26, 24, 124};
         mg.Padding    = [0 0 0 0];
         mg.RowSpacing = 2;
         uilabel(mg, 'Text', 'B (all phases)', 'FontWeight', 'bold', ...
             'Tooltip', 'Global B column: one duty per LED, used during every phase.');
-        uilabel(mg, 'Text', '');
         uilabel(mg, 'Text', '');
         ig = uigridlayout(mg, [1 1]);
         ig.ColumnWidth = {62};
@@ -453,7 +481,22 @@ function stimulusGUI(mode)
     end
 
     function onSelectStim()
-        showEntry(reg(h.list.ValueIndex), struct());   % registry defaults
+        % Remember the panel for the stimulus being LEFT, then show the newly picked
+        % stimulus with its last-used values (registry defaults only the first time).
+        rememberParams();
+        e = reg(h.list.ValueIndex);
+        showEntry(e, getfielddef(lastParams, e.fn, struct()));
+    end
+
+    function rememberParams()
+        % Keep the panel's current values per stimulus TYPE, so re-selecting it (now or
+        % next session -- saved with the session state) starts from the last-used
+        % values, not the registry defaults. A half-typed invalid value is skipped.
+        if suppressRemember, return; end
+        try
+            lastParams.(curEntry.fn) = local_paramsFromRows(curEntry, h.paramTable.Data);
+        catch
+        end
     end
 
     function showEntry(entry, ps)
@@ -463,7 +506,7 @@ function stimulusGUI(mode)
         h.rightGrid.RowHeight{3} = local_paramTableHeight(size(h.paramTable.Data, 1));
         h.paramTitle.Text = ['Parameters for:  ' curEntry.name '   (' curEntry.fn ')'];
         if local_seedArgFor(curEntry) > 0
-            h.seedNote.Text = 'Seeds: one per epoch, auto-assigned -- editable in the seed column.';
+            h.seedNote.Text = 'Seeds: one per epoch, assigned at random -- editable in the seed column.';
         else
             h.seedNote.Text = 'Seed: not applicable to this stimulus.';
         end
@@ -483,23 +526,29 @@ function stimulusGUI(mode)
         h.epochs.Value    = max(1, round(blocks(b).epochs));
         h.label.Value     = char(blocks(b).label);
         showEntry(reg(k), blocks(b).params);
+        rememberParams();      % the loaded block's values become this stimulus's last-used
     end
 
     function onParamEdit(evt)
         % "duration (s)" and stimFrames are two views of the same thing. Editing either
         % (or refreshRate) rewrites the other so the presentation length stays consistent:
         % seconds -> frames = round(seconds * refreshRate), then seconds is snapped back to
-        % the whole-frame value that will ACTUALLY be presented.
+        % the whole-frame value that will ACTUALLY be presented. Every successful edit is
+        % remembered per stimulus type (see rememberParams).
         data = h.paramTable.Data;
-        if isempty(evt.Indices) || ~local_hasDuration(curEntry), return; end
+        if isempty(evt.Indices), return; end
         name = data{evt.Indices(1), 1};
-        if ~any(strcmp(name, {'stimFrames', 'refreshRate', local_durRowName()})), return; end
-        try
-            h.paramTable.Data = local_syncDuration(curEntry, data, name);
-        catch err
-            h.paramTable.Data = data;    % leave the typed text in place to be corrected
-            uialert(h.fig, err.message, 'Invalid parameter');
+        if local_hasDuration(curEntry) && ...
+                any(strcmp(name, {'stimFrames', 'refreshRate', local_durRowName()}))
+            try
+                h.paramTable.Data = local_syncDuration(curEntry, data, name);
+            catch err
+                h.paramTable.Data = data;    % leave the typed text in place to be corrected
+                uialert(h.fig, err.message, 'Invalid parameter');
+                return;
+            end
         end
+        rememberParams();
     end
 
     function onAddBlock()
@@ -521,6 +570,7 @@ function stimulusGUI(mode)
                         'epochs', n, 'label', char(h.label.Value), ...
                         'seeds', local_nextSeeds(blocks, n, local_seedArgFor(curEntry) > 0));
             blocks(end + 1) = b;
+            lastParams.(curEntry.fn) = ps;
             refreshProtocol();
         catch err
             uialert(h.fig, err.message, 'Invalid parameter');
@@ -595,130 +645,121 @@ function stimulusGUI(mode)
         syncLinked(key);
     end
 
-    % -------- LED-table links: "link with" keeps two or more phase grids identical --------
-    function ks = linkMembers(gid)
+    % ------ LED-table links: ONE linked set of sections sharing LED R/G + RGBval ------
+    function ks = linkMembers()
         all = {'pre', 'post', 'iti', 'final'};
-        ks  = all(cellfun(@(k) linkGroup.(k) == gid, all));
+        ks  = all(cellfun(@(k) linkOn.(k), all));
     end
 
     function syncLinked(key)
-        % Mirror `key`'s grid to every table in its link group (no-op when unlinked, and
-        % for the stimulus grid, which is not linkable).
-        if ~isfield(linkGroup, key) || linkGroup.(key) <= 0, return; end
+        % Mirror `key`'s LED grid AND its RGBval screen to every linked section
+        % (no-op when key is unlinked, and for the stimulus grid, which has neither).
+        if ~isfield(linkOn, key) || ~linkOn.(key), return; end
         d = h.phGrid.(key).Data;
-        for m = linkMembers(linkGroup.(key))
-            if ~strcmp(m{1}, key), h.phGrid.(m{1}).Data = d; end
+        v = phaseScreenRGB(key);
+        for m = linkMembers()
+            if ~strcmp(m{1}, key)
+                h.phGrid.(m{1}).Data = d;
+                setPhaseScreenRGB(m{1}, v);
+            end
         end
     end
 
-    function refreshLinkUI()
-        short = struct('pre', 'pre', 'post', 'post', 'iti', 'inter', 'final', 'end');
+    function paintLinkStyles()
+        % While linking: members get the green wash, the rest a dim "eligible" tint.
+        % Outside link mode nothing is painted. The RGBval swatch cell is re-applied
+        % after every removeStyle (cell styles stack on top of table styles).
         for kk = {'pre', 'post', 'iti', 'final'}
             key = kk{1};
-            cb  = h.phLink.(key);
-            g   = linkGroup.(key);
-            if g > 0
-                others = linkMembers(g);
-                others = others(~strcmp(others, key));
-                cb.Text  = ['linked w ' strjoin(cellfun(@(k) short.(k), others, ...
-                                                        'UniformOutput', false), '+')];
-                cb.Value = true;
-            elseif strcmp(linkPick, key)
-                cb.Text  = 'link with';
-                cb.Value = true;
-            else
-                cb.Text  = 'link with';
-                cb.Value = false;
+            removeStyle(h.phGrid.(key));
+            if linkMode
+                if linkOn.(key), c = [0.25 0.42 0.20]; else, c = [0.36 0.33 0.14]; end
+                addStyle(h.phGrid.(key), uistyle('BackgroundColor', c));
             end
+            updateSwatch(key);
         end
     end
 
-    function clearPickUI()
-        for kk = {'pre', 'post', 'iti', 'final'}
-            removeStyle(h.phGrid.(kk{1}));
+    function drawLinkLine()
+        % The line under the band connecting the linked sections (dot on each member).
+        try
+            delete(h.linkStrip.Children);
+            ks = linkMembers();
+            if numel(ks) < 2, return; end
+            % h.linkX holds each LED table's center, computed from the band's fixed
+            % widths at build time (grid children report no usable Position).
+            xs = cellfun(@(k) h.linkX.(k), ks);
+            xs = sort(xs);
+            c  = [0.30 0.65 0.35];
+            uipanel(h.linkStrip, 'BorderType', 'none', 'BackgroundColor', c, ...
+                    'Position', [xs(1), 5, max(2, xs(end) - xs(1)), 3]);
+            for i = 1:numel(xs)
+                uipanel(h.linkStrip, 'BorderType', 'none', 'BackgroundColor', c, ...
+                        'Position', [xs(i) - 4, 2, 9, 9]);          % the square
+                uipanel(h.linkStrip, 'BorderType', 'none', 'BackgroundColor', c, ...
+                        'Position', [xs(i) - 1, 11, 3, 11]);        % tick UP toward its table
+            end
+        catch
+            % the line is a decoration -- never let it break the band
         end
-        refreshLinkUI();
     end
 
-    function onLinkToggle(key)
-        if h.phLink.(key).Value && linkGroup.(key) <= 0
-            % arm: highlight the other tables and wait for a click on one of them
-            if ~isempty(linkPick) && ~strcmp(linkPick, key)   % re-arm from another section
-                h.phLink.(linkPick).Value = false;
-            end
-            linkPick = key;
-            clearPickUI();
+    function onLinkMode()
+        if ~linkMode
+            linkMode = true;
+            h.linkBtn.Text = 'done linking';
+            % read-only while linking: an editable cell swallows clicks (click ->
+            % select, click again -> editor opens and ClickedFcn never fires), which
+            % made toggling feel unreliable
             for kk = {'pre', 'post', 'iti', 'final'}
-                if ~strcmp(kk{1}, key)
-                    addStyle(h.phGrid.(kk{1}), uistyle('BackgroundColor', [0.25 0.42 0.20]));
-                    h.phLink.(kk{1}).Text = 'click me';
-                end
+                h.phGrid.(kk{1}).ColumnEditable   = [false false];
+                h.phScrTbl.(kk{1}).ColumnEditable = false;
             end
-            setLedStatus('Link: click one of the highlighted LED tables to link with (untick to cancel).', ...
-                [0.45 0.45 0.45]);
-        elseif ~h.phLink.(key).Value
-            if strcmp(linkPick, key)                          % cancel an armed pick
-                linkPick = '';
-                clearPickUI();
-                setLedStatus('', [0.45 0.45 0.45]);
-            elseif linkGroup.(key) > 0                        % unlink this table
-                g = linkGroup.(key);
-                linkGroup.(key) = 0;
-                rest = linkMembers(g);
-                if numel(rest) < 2                            % a group of one is no group
-                    for r = rest, linkGroup.(r{1}) = 0; end
-                end
-                refreshLinkUI();
-            end
+            paintLinkStyles();
+            setLedStatus(['Linking: click sections to toggle them into/out of the linked set, ' ...
+                          'then press "done linking".'], [0.45 0.45 0.45]);
         else
-            refreshLinkUI();                                  % ticking an already-linked box: restore
+            linkMode = false;
+            h.linkBtn.Text = 'link values';
+            for kk = {'pre', 'post', 'iti', 'final'}
+                h.phGrid.(kk{1}).ColumnEditable   = [true true];
+                h.phScrTbl.(kk{1}).ColumnEditable = true;
+            end
+            if numel(linkMembers()) < 2      % a set of one is no link at all
+                for kk = {'pre', 'post', 'iti', 'final'}, linkOn.(kk{1}) = false; end
+            end
+            paintLinkStyles();
+            drawLinkLine();
+            ks = linkMembers();
+            if isempty(ks)
+                setLedStatus('No sections linked.', [0.45 0.45 0.45]);
+            else
+                setLedStatus(sprintf('Linked: %s (shared LED R/G + RGBval).', strjoin(ks, ' + ')), ...
+                    [0.13 0.45 0.20]);
+            end
         end
     end
 
     function onPhaseTableClick(key)
-        % Complete an armed "link with": clicking a highlighted table links it to the
-        % section that armed the pick; the CLICKED table's values win for the group.
-        if isempty(linkPick) || strcmp(key, linkPick) || ~isfield(linkGroup, key), return; end
-        src = linkPick;
-        linkPick = '';
-        if linkGroup.(key) > 0
-            gid = linkGroup.(key);
+        % While "link values" is armed, clicking a section toggles its membership in
+        % the linked set; a section joining the set ADOPTS the set's current values.
+        if ~linkMode || ~isfield(linkOn, key), return; end
+        if linkOn.(key)
+            linkOn.(key) = false;
         else
-            gid = max(structfun(@(x) x, linkGroup)) + 1;
-            linkGroup.(key) = gid;
+            others = linkMembers();
+            linkOn.(key) = true;
+            if ~isempty(others)              % adopt the group's values on joining
+                src = others{1};
+                h.phGrid.(key).Data = h.phGrid.(src).Data;
+                setPhaseScreenRGB(key, phaseScreenRGB(src));
+            end
         end
-        linkGroup.(src) = gid;
-        d = h.phGrid.(key).Data;
-        for m = linkMembers(gid), h.phGrid.(m{1}).Data = d; end
-        clearPickUI();
-        setLedStatus(sprintf('LED tables linked: %s.', strjoin(linkMembers(gid), ' + ')), ...
-            [0.13 0.45 0.20]);
-    end
-
-    function onLedNameDblClick(evt)
-        % Double-click an LED's row name (shown on the pre-stim table) to rename that
-        % LED. The name is saved to rig_config `led_names`, so it survives restarts.
-        try
-            ii = evt.InteractionInformation;
-            if ~ii.RowHeader || isempty(ii.Row), return; end
-            row = ii.Row;
-        catch
-            return;
-        end
-        old = ledNames{row};
-        newName = local_askString(h.fig, 'Rename LED', ...
-            sprintf('Name for this LED row (currently "%s"):', old), old);
-        if isempty(newName) || strcmp(newName, old), return; end
-        ledNames{row} = newName;
-        h.phGrid.pre.RowName = ledNames;
-        try
-            setRigConfig('led_names', ledNames);
-        catch err
-            setLedStatus(['LED name not saved to rig_config: ' err.message], [0.85 0.45 0.10]);
-            return;
-        end
-        setLedStatus(sprintf('LED row %d renamed to "%s" (saved to rig_config).', row, newName), ...
-            [0.13 0.45 0.20]);
+        h.phGrid.(key).Selection   = [];    % no lingering cell selection between toggles
+        h.phScrTbl.(key).Selection = [];
+        paintLinkStyles();
+        drawLinkLine();
+        drawnow;                            % instant feedback -- a toggle must be visible NOW
     end
 
     % -------- the RGBval column (a one-column table: R, G, B rows + a swatch cell) --------
@@ -745,9 +786,14 @@ function stimulusGUI(mode)
 
     function updateSwatch(key)
         % The bottom cell IS the swatch: its background is painted the actual color, so
-        % it is theme-independent by construction.
+        % it is theme-independent by construction. Re-applies the link-mode wash first
+        % (cell styles stack on top of table styles).
         t = h.phScrTbl.(key);
         removeStyle(t);
+        if linkMode
+            if linkOn.(key), c = [0.25 0.42 0.20]; else, c = [0.36 0.33 0.14]; end
+            addStyle(t, uistyle('BackgroundColor', c));
+        end
         addStyle(t, uistyle('BackgroundColor', phaseScreenRGB(key)), 'cell', [4 1]);
     end
 
@@ -766,10 +812,17 @@ function stimulusGUI(mode)
         d{r} = min(max(v, 0), 1);
         h.phScrTbl.(key).Data = d;
         updateSwatch(key);
+        syncLinked(key);
     end
 
     function onScreenClick(key, evt)
-        % A click on the bottom (swatch) cell opens the color picker.
+        % While "link values" is armed, a click anywhere on the RGBval table toggles
+        % this section's membership; otherwise a click on the bottom (swatch) cell
+        % opens the color picker.
+        if linkMode
+            onPhaseTableClick(key);
+            return;
+        end
         try
             if evt.InteractionInformation.Row ~= 4, return; end
         catch
@@ -778,6 +831,7 @@ function stimulusGUI(mode)
         c = uisetcolor(phaseScreenRGB(key), 'Phase screen color');
         if isscalar(c), return; end            % dialog cancelled
         setPhaseScreenRGB(key, c);
+        syncLinked(key);
     end
 
     function onMasterBEdit(evt)
@@ -810,7 +864,8 @@ function stimulusGUI(mode)
                           'grid', phaseGrid43('final'));
         ps.syncB   = true;                     % B is always global now
         ps.masterB = double(h.masterB.Data(:)');
-        ps.links   = linkGroup;                % LED-table link groups (0 = unlinked)
+        ps.links = struct('pre', 0, 'post', 0, 'iti', 0, 'final', 0);
+        for lk = linkMembers(), ps.links.(lk{1}) = 1; end   % the linked set (0 = unlinked)
     end
 
     function applyPhasesToUI(spec)
@@ -840,9 +895,16 @@ function stimulusGUI(mode)
             h.phGrid.(key).Data = spec.(key).grid(:, 1:2);
             setPhaseScreenRGB(key, spec.(key).rgb);
         end
-        linkPick  = '';
-        linkGroup = spec.links;
-        clearPickUI();     % restores link labels/ticks and drops any pick highlight
+        linkMode = false;
+        h.linkBtn.Text = 'link values';
+        for kk = {'pre', 'post', 'iti', 'final'}
+            linkOn.(kk{1}) = spec.links.(kk{1}) > 0;   % old multi-group saves merge into one set
+        end
+        if numel(linkMembers()) < 2
+            for kk = {'pre', 'post', 'iti', 'final'}, linkOn.(kk{1}) = false; end
+        end
+        paintLinkStyles();
+        drawLinkLine();
     end
 
     % ================= Quick load: 10 assignable experiment slots =================
@@ -989,6 +1051,7 @@ function stimulusGUI(mode)
         try
             ps     = local_paramsFromRows(curEntry, h.paramTable.Data);
             blocks = local_applyToEpochs(blocks, rows, ps, char(h.label.Value));
+            lastParams.(curEntry.fn) = ps;
         catch err
             uialert(h.fig, err.message, 'Invalid parameter');
             return;
@@ -1313,6 +1376,8 @@ function stimulusGUI(mode)
                        'stimIndex', h.list.ValueIndex);
             o.leds   = gatherLeds();
             o.phases = gatherPhaseSpec();
+            rememberParams();               % capture the panel as shown right now
+            o.last_params = lastParams;     % per-stimulus last-used parameters
             fid = fopen(stateFile, 'w');
             if fid > 0
                 fwrite(fid, local_experimentToJson(blocks, o), 'char');
@@ -1336,8 +1401,14 @@ function stimulusGUI(mode)
         h.triggerAcq.Value = logical(getfielddef(o, 'triggerAcq', true));
         applyLedsToUI(getfielddef(o, 'leds', struct()));
         applyPhasesToUI(getfielddef(o, 'phases', []));
+        lastParams = local_coerceLastParams(reg, getfielddef(o, 'last_params', struct()));
         si = round(getfielddef(o, 'stimIndex', 1));
-        if si >= 1 && si <= numel(reg), h.list.ValueIndex = si; onSelectStim(); end
+        if si >= 1 && si <= numel(reg)
+            suppressRemember = true;        % restoring must not clobber the restored map
+            h.list.ValueIndex = si;
+            onSelectStim();
+            suppressRemember = false;
+        end
         blocks = blk;
         refreshProtocol();
     end
@@ -1567,19 +1638,36 @@ function b = local_emptyBlocks()
 end
 
 function s = local_nextSeeds(blocks, n, seeded)
-% n fresh seeds, continuing past the highest seed anywhere in the protocol so every epoch
-% is an INDEPENDENT noise realization. An empty protocol starts at 2 (the long-standing
-% default first seed). Pass seeded=false (a stimulus with no seed argument) to get [].
+% n fresh RANDOM seeds (user request: not a guessable n+1 sequence), uniform over
+% [1, 1e6], each distinct from every seed already in the protocol and from each other,
+% so every epoch is an INDEPENDENT noise realization. Reproducibility is unchanged --
+% the seed that actually ran is recorded per epoch in the manifest (and in the values
+% CSV), and analysis regenerates the noise from it. Drawn from a private time-seeded
+% stream: the global RNG is untouched, and a fresh MATLAB session does not deal the
+% default global sequence (which would repeat seeds across sessions). Pass seeded=false
+% (a stimulus with no seed argument) to get [].
+    persistent rs
+    if isempty(rs)
+        rs = RandStream('mt19937ar', 'Seed', ...
+                        mod(round(posixtime(datetime('now')) * 1e3), 2^31));
+    end
     if nargin >= 3 && ~seeded
         s = [];
         return;
     end
-    mx = 1;
+    used = [];
     for b = 1:numel(blocks)
-        sd = getfielddef(blocks(b), 'seeds', []);
-        if ~isempty(sd), mx = max(mx, max(sd)); end
+        used = [used, double(reshape(getfielddef(blocks(b), 'seeds', []), 1, []))]; %#ok<AGROW>
     end
-    s = mx + (1:n);
+    used = used(isfinite(used));
+    s = zeros(1, n);
+    for i = 1:n
+        v = randi(rs, 1e6);
+        while any(v == used) || any(v == s(1:i-1))
+            v = randi(rs, 1e6);
+        end
+        s(i) = v;
+    end
 end
 
 function m = local_coerce43(v)
@@ -1623,6 +1711,26 @@ function n = local_coerceLedNames(raw)
             v = '';
         end
         if ~isempty(v) && (ischar(raw{i}) || isstring(raw{i})), n{i} = v; end
+    end
+end
+
+function lp = local_coerceLastParams(reg, raw)
+% Saved per-stimulus last-used params -> a clean map: only registry stimuli survive, and
+% numeric fields come back as ROWS (jsondecode hands back columns for vec2 params).
+    lp = struct();
+    if ~isstruct(raw), return; end
+    fns = fieldnames(raw);
+    for i = 1:numel(fns)
+        if ~any(strcmp({reg.fn}, fns{i})), continue; end
+        ps = raw.(fns{i});
+        if ~isstruct(ps), continue; end
+        pf = fieldnames(ps);
+        for k = 1:numel(pf)
+            if isnumeric(ps.(pf{k}))
+                ps.(pf{k}) = double(reshape(ps.(pf{k}), 1, []));
+            end
+        end
+        lp.(fns{i}) = ps;
     end
 end
 
@@ -2435,16 +2543,20 @@ function selftest()
     assert(ps5.stimFrames == 900 && ps5.refreshRate == 90, 'the synced frame count is what gets run');
     fprintf('[selftest] duration <-> stimFrames stay redundant through refreshRate\n');
 
-    % ---- per-epoch seeds: auto-assignment continues past the highest in use ----
+    % ---- per-epoch seeds: RANDOM auto-assignment, unique within the protocol ----
     blocks    = local_emptyBlocks();
-    assert(isequal(local_nextSeeds(blocks, 3), [2 3 4]), 'an empty protocol starts seeding at 2');
+    s3 = local_nextSeeds(blocks, 3);
+    assert(numel(s3) == 3 && numel(unique(s3)) == 3 && all(s3 >= 1 & s3 <= 1e6) && ...
+           all(s3 == round(s3)), 'fresh seeds are 3 distinct random integers in [1, 1e6]');
+    assert(~isequal(local_nextSeeds(blocks, 3), local_nextSeeds(blocks, 3)), ...
+        'consecutive draws differ (the seed stream advances)');
     assert(isempty(local_nextSeeds(blocks, 3, false)), 'non-seeded stimuli get no seeds');
     blocks(1) = struct('stimName', g.name, 'fnName', g.fn, 'params', ps, 'epochs', 5, ...
                        'label', 'grey gauss', 'seeds', [2 3 4 5 6]);
-    assert(isequal(local_nextSeeds(blocks, 2), [7 8]), 'fresh seeds continue past the highest');
-    blocks(1).seeds(3) = 40;                                  % a hand-edited seed
-    assert(isequal(local_nextSeeds(blocks, 1), 41), 'a hand-edited high seed moves the counter');
-    blocks(1).seeds(3) = 4;
+    for rep = 1:50   % new seeds NEVER collide with the ones already in the protocol
+        assert(~any(ismember(local_nextSeeds(blocks, 2), blocks(1).seeds)), ...
+            'fresh seeds avoid every seed already in use');
+    end
     blocks(2) = struct('stimName', j.name, 'fnName', j.fn, 'params', pj, 'epochs', 3, ...
                        'label', 'jit', 'seeds', []);
     opts = struct('preStim', 2, 'postStim', 1, 'itp', 3, ...
@@ -2465,7 +2577,9 @@ function selftest()
     legacy = struct('format', 'neitz-experiment/1', 'opts', struct(), 'blocks', ...
                     {{struct('stim', g.fn, 'params', ps, 'epochs', 3, 'label', 'old')}});
     bl = local_jsonToExperiment(reg, jsonencode(legacy));
-    assert(isequal(bl(1).seeds, [2 3 4]), 'a pre-seeds file gets fresh per-epoch seeds on load');
+    assert(numel(bl(1).seeds) == 3 && numel(unique(bl(1).seeds)) == 3 && ...
+           all(bl(1).seeds >= 1 & bl(1).seeds <= 1e6), ...
+        'a pre-seeds file gets fresh (random, distinct) per-epoch seeds on load');
 
     % ---- protocol table lists one row per EPOCH; blocks stay the run-time grouping ----
     % (this test protocol is legacy-MIXED, so it renders as the read-only overview)
