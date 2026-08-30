@@ -1,0 +1,6 @@
+# USB HID access to the DLPC350. Ships as a prebuilt wheel on Windows,
+# with hidapi statically linked -- no separate DLL, no driver install.
+hidapi>=0.14.0
+
+# Optional, only used by analysis\check_linearity.py --plot
+matplotlib>=3.7

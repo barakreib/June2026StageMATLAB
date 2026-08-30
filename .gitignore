@@ -13,3 +13,7 @@ timing_tests/
 # per-run generated stimulus scripts (written next to the day's data at Run time)
 generated_stimuli/
 *_values.csv
+
+# lcr4500-linearize: local python env + bytecode (recreate via setup.bat / requirements.txt)
+lcr4500-linearize/.venv/
+__pycache__/

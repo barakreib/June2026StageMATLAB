@@ -1,0 +1,55 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>LCr4500 ramp (fallback)</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  #hud{position:fixed;top:8px;left:8px;font:14px Consolas,monospace;
+       color:#0f0;background:#000;padding:4px 6px;white-space:pre}
+  #hud.hidden{display:none}
+</style>
+<div id="hud"></div>
+<script>
+  // Fallback only. Use ramp.py when you can -- the browser may colour-manage
+  // these values. If you must use this: Windows colour profile for the
+  // projector set to sRGB, HDR off, Night light off, then F11 for fullscreen.
+  const SEQ = [...Array(16).keys()].map(i => i * 16).concat([255]);
+  const CH = ["white", "red", "green", "blue"];
+  let level = 0, ch = 0, idx = 0, typed = "";
+  const hud = document.getElementById("hud");
+
+  function draw() {
+    const v = level;
+    let r = v, g = v, b = v;
+    if (CH[ch] === "red") { g = b = 0; }
+    if (CH[ch] === "green") { r = b = 0; }
+    if (CH[ch] === "blue") { r = g = 0; }
+    document.body.style.background = `rgb(${r},${g},${b})`;
+    hud.textContent = `level ${String(level).padStart(3)}   rgb(${r},${g},${b})   `
+      + `${CH[ch]}   step ${idx + 1}/${SEQ.length}${typed ? "  typing:" + typed : ""}\n`
+      + `[h] hide  [f] fullscreen`;
+  }
+  function setLevel(v) {
+    level = Math.max(0, Math.min(255, v));
+    if (SEQ.includes(level)) idx = SEQ.indexOf(level);
+    draw();
+  }
+  addEventListener("keydown", e => {
+    const k = e.key;
+    if (k === "ArrowUp") setLevel(level + 1);
+    else if (k === "ArrowDown") setLevel(level - 1);
+    else if (k === "PageUp") setLevel(level + 16);
+    else if (k === "PageDown") setLevel(level - 16);
+    else if (k === "ArrowRight") { idx = Math.min(SEQ.length - 1, idx + 1); setLevel(SEQ[idx]); }
+    else if (k === "ArrowLeft") { idx = Math.max(0, idx - 1); setLevel(SEQ[idx]); }
+    else if (k === "Home") setLevel(0);
+    else if (k === "End") setLevel(255);
+    else if (k === "c") { ch = (ch + 1) % CH.length; draw(); }
+    else if (k === "h") { hud.classList.toggle("hidden"); }
+    else if (k === "f") { document.documentElement.requestFullscreen(); }
+    else if (k >= "0" && k <= "9") { typed = (typed + k).slice(-3); draw(); }
+    else if (k === "Enter") { if (typed) { setLevel(parseInt(typed, 10)); typed = ""; } }
+    else return;
+    e.preventDefault();
+  });
+  draw();
+</script>
