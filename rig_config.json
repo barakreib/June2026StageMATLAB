@@ -3,7 +3,7 @@
   "projector": "TI LightCrafter 4500",
   "projector_mode": "Video",
   "refresh_rate_hz": 60,
-  "stage_host": "192.168.1.131",
+  "stage_host": "192.168.0.51",
   "led_port": "COM3",
   "debug_values_csv": false,
   "gamma": 1.9949,
@@ -53,12 +53,12 @@
         [
           0.136,
           0.1085,
-          1.0
+          1
         ],
         [
           0.2708,
           0.3271,
-          1.0
+          1
         ],
         [
           1,

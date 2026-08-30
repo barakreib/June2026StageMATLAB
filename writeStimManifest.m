@@ -1,39 +1,31 @@
 function outPath = writeStimManifest(outDir, record)
-% writeStimManifest  Append one trial's stimulus metadata to a per-day session log.
+% writeStimManifest  Append one trial's stimulus metadata to the per-day NESTED session log.
 %
 %   outPath = writeStimManifest(outDir, record)
 %
-%   DUAL-WRITE (transitional). Each call writes the trial to TWO files in outDir:
-%
-%   (a) FLAT  <outDir>/YYYY_MM_DD_stim_manifest.jsonl   (legacy, unchanged)
-%       One JSON object per line (JSON Lines), one row per trial, in trial order.
-%       This is the format the Neitz_Analysis_Suite pairs to the Clampex .abf files
-%       BY ORDER (and refuses to pair on a row/recording count or timestamp mismatch),
-%       then regenerates the exact noise from record.seed -- so NO per-frame values are
-%       stored. outPath (returned) is this file.
-%
-%   (b) NESTED <outDir>/YYYY_MM_DD_stim_manifest.json   (new, hierarchical)
-%       One document per day, mirroring how stimulusGUI organizes a session:
+%   Writes ONE document per day, <outDir>/YYYY_MM_DD_stim_manifest.json, mirroring how a
+%   session is organized:
 %           day -> cells[] (patched cell) -> blocks[] (stimulus + label + params + LEDs)
 %               -> epochs[] (each with its seed + timestamp + frame_sync).
-%       Session/block/epoch context (which cell, which block, the LED grid) comes from a
-%       base-workspace struct `neitzSessionContext` that runExperiment/stimulusGUI publish
-%       (see local_sessionContext). A standalone stimulus run with no context still logs
-%       under cell "(standalone)" (or a base-workspace `cellName`). The nested write is
-%       best-effort: a failure there NEVER aborts the trial (the flat .jsonl is the
-%       source of truth), and the whole tree is written atomically (temp file + rename).
+%   Session/block/epoch context (which cell, which block, the LED grid) comes from a
+%   base-workspace struct `neitzSessionContext` that runExperiment/stimulusGUI publish
+%   (see local_sessionContext). A standalone stimulus run with no context logs under cell
+%   "(standalone)" (or a base-workspace `cellName`). The whole tree is written atomically
+%   (temp file + rename), so a crash mid-write never leaves a half-written manifest.
+%   outPath (returned) is this .json file.
 %
-%   The nested document is a superset of the flat one and is LOSSLESSLY FLATTENABLE back to
-%   the flat row order (document order == acquisition order), so the analysis reader can be
-%   taught to consume it later; until then the .jsonl keeps the import pipeline unchanged.
-%   Once the analysis side reads nested, the .jsonl write can be dropped ("replace").
+%   This is the ONE format the Neitz_Analysis_Suite imports (stim_io.build_import_plan): it
+%   pairs the epochs to the Clampex .abf files BY TIMESTAMP (not blind order, so a false
+%   start with no .abf or a discarded block doesn't mislabel data) and regenerates the exact
+%   noise from record.seed -- so NO per-frame values are stored. The legacy flat
+%   `*_stim_manifest.jsonl` dual-write was DROPPED (both sides now speak nested .json).
 %
 %   `record` is a struct of metadata: seed, mu, sigma, checks_x, checks_y,
 %   n_updates, update_every_n_frames, refresh_rate_hz, stim_frames, gamma,
 %   stim_type ('gaussian_noise' | 'checkerboard' | 'sq_wave' | 'jitter'),
 %   cone_isolation ('S' | 'achromatic'), stimulus (function name), etc. Three fields
 %   are added automatically:
-%     - `timestamp`      : local ISO-8601 time of the presentation.
+%     - `timestamp`      : local ISO-8601 time of the presentation (the .abf pairing key).
 %     - `rig`            : the rig hardware/calibration state from rig_config.json
 %                          (projector, projector_mode, gamma + the full linearization
 %                          model/LUT, channel_to_led, ...), so each recording is
@@ -44,13 +36,14 @@ function outPath = writeStimManifest(outDir, record)
 %                          epochs of the same PROTOCOL therefore share a stim_signature,
 %                          so the importer groups them as N epochs of ONE stimulus; any
 %                          protocol change (type/cone/mu/sigma/checks/...) differs.
-%                          Computed per call, so it works for the plain trial-loop
-%                          (Experimenter5000_v2) and runExperiment alike, with no
-%                          coordination between calls and no change to acquisition.
 %
 %   Append-only: called once per trial by each stimulus function, so a stimulus run
 %   standalone (outside Experimenter5000) is still recorded. The seed is the source
 %   of truth; the noise is regenerated downstream, never stored here.
+%
+%   See finalizeStimBlock.m for the post-hoc edits the stimulusGUI "protocol complete"
+%   dialog applies to this document (append a suffix to the current cell name, or DISCARD
+%   the just-finished block -> its epochs move to a top-level `discarded[]` skip list).
 
     if nargin < 1 || isempty(outDir), outDir = pwd; end
 
@@ -67,22 +60,12 @@ function outPath = writeStimManifest(outDir, record)
         record.timestamp = char(datetime('now', 'Format', 'yyyy-MM-dd''T''HH:mm:ss'));
     end
     dateStr = char(datetime('now', 'Format', 'yyyy_MM_dd'));
-    outPath = fullfile(outDir, [dateStr '_stim_manifest.jsonl']);
+    outPath = fullfile(outDir, [dateStr '_stim_manifest.json']);
 
-    % ---- (a) FLAT .jsonl (legacy, unchanged) -- one line per trial ----
-    fid = fopen(outPath, 'a');
-    if fid < 0, error('writeStimManifest:cannotOpen', 'Cannot open %s for writing', outPath); end
-    closer = onCleanup(@() fclose(fid));
-    fprintf(fid, '%s\n', jsonencode(record));
-    clear closer;   % force fclose before we touch the nested file
-
-    % ---- (b) NESTED .json (day -> cell -> block -> epoch) -- best-effort, atomic ----
-    try
-        local_writeNested(outDir, record, dateStr);
-    catch nestedErr
-        fprintf(2, '[writeStimManifest] WARNING: nested manifest write failed (flat .jsonl OK): %s\n', ...
-                nestedErr.message);
-    end
+    % Single source of truth: the NESTED day -> cell -> block -> epoch document, written
+    % atomically. (The legacy flat .jsonl dual-write was dropped -- the Analysis Suite now
+    % imports the nested .json directly, pairing epochs to .abf files by timestamp.)
+    local_writeNested(outDir, record, dateStr);
 end
 
 

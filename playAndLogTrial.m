@@ -9,7 +9,10 @@ function sync = playAndLogTrial(client, player, outDir, record, refreshRate, tot
 %   1. stamps record.timestamp BEFORE play -- the .abf pairing keys off acquisition time
 %      (~play START, not play end), so the row is WRITTEN after play but carries the
 %      pre-play time;
-%   2. plays the presentation down the real client/server pipeline;
+%   2. plays the presentation down the real client/server pipeline, then waits out its
+%      KNOWN duration in interruptible slices rather than blocking in getPlayInfo -- which
+%      is what keeps the GUI alive (and its Cancel button clickable) mid-presentation, and
+%      what feeds the live stimulusMonitor readout via stimProgress;
 %   3. reads the server's per-flip timing via client.getPlayInfo() and reduces it to a
 %      dropped-frame count + drift (full rationale in test_AAGreyscaleFFNoise.m);
 %   4. attaches that as record.frame_sync and appends ONE manifest row (append-only; the
@@ -36,9 +39,18 @@ function sync = playAndLogTrial(client, player, outDir, record, refreshRate, tot
     catch
     end
 
-    % ---- (2) Play, then retrieve timing (robustly) ----
-    % client.play returns immediately (the server ACKs, THEN renders); the presentation's
-    % wall time actually elapses inside getPlayInfo, which blocks until it completes.
+    % ---- (2) Play, wait out the presentation, then retrieve timing (robustly) ----
+    % client.play returns as soon as the SERVER ACKs -- the presentation then renders
+    % remotely while this MATLAB sits idle. getPlayInfo blocks until the presentation
+    % completes, so calling it straight after play (as this did) is what made the whole
+    % presentation's wall time elapse inside one un-interruptible socket read: no drawnow,
+    % no event queue, so the GUI froze and a Cancel click was not seen until afterwards.
+    %
+    % Instead, wait out the KNOWN duration here, in a loop that services the event queue and
+    % reports progress; getPlayInfo is then asked for telemetry the server already has, and
+    % returns promptly. Nothing about the presentation itself changes -- it renders on the
+    % server either way, and the telemetry is stored there until the next play, so asking
+    % LATE is always safe (asking EARLY is what blocks).
     played  = false;
     playErr = [];
     info    = [];
@@ -49,8 +61,9 @@ function sync = playAndLogTrial(client, player, outDir, record, refreshRate, tot
     catch playErr
     end
     if played
+        local_awaitPresentation(double(totalFrames) / refresh, record, refresh, totalFrames);
         try
-            info = client.getPlayInfo();   % BLOCKS until the presentation completes
+            info = client.getPlayInfo();   % the presentation has finished: returns promptly
         catch
             info = [];                     % telemetry unavailable; not a play failure
         end
@@ -75,6 +88,65 @@ function sync = playAndLogTrial(client, player, outDir, record, refreshRate, tot
     if ~played
         rethrow(playErr);   % surface the play failure -- AFTER the trial was logged
     end
+end
+
+
+function local_awaitPresentation(durS, record, refresh, totalFrames)
+% Wait out a presentation that is rendering on the Stage server, keeping this MATLAB
+% responsive: short pause() slices against a DEADLINE (so the total keeps plain-pause
+% accuracy) with a progress report each tick. The pause is what lets the GUI repaint and
+% run its Cancel callback -- the whole point of not blocking in getPlayInfo.
+%
+% Cancelling does NOT cut a presentation short. It is already playing on the server and its
+% Clampex sweep is already recording, so it always runs to completion and is logged; the
+% cancel is acted on at runExperiment's next epoch boundary.
+    if ~isfinite(durS) || durS <= 0, return; end
+    if ~stimProgress('isAttached')
+        % Nothing is listening (a stimulus run straight from the prompt): still yield in
+        % slices rather than blocking, so Ctrl-C and figure redraws keep working.
+        local_sliceWait(durS, []);
+        return;
+    end
+    info = local_stimInfo(record, refresh, totalFrames, durS);
+    local_sliceWait(durS, info);
+    stimProgress('report', struct('phase', 'presenting', ...
+        'phaseElapsed', durS, 'phaseTotal', durS, 'stim', info));
+end
+
+
+function local_sliceWait(durS, info)
+    t0 = tic;
+    while true
+        el = toc(t0);
+        if el >= durS, break; end
+        if ~isempty(info)
+            stimProgress('report', struct('phase', 'presenting', ...
+                'phaseElapsed', el, 'phaseTotal', durS, 'stim', info));
+        end
+        pause(min(0.05, durS - el));
+    end
+end
+
+
+function si = local_stimInfo(record, refresh, totalFrames, durS)
+% The stimulus's own numbers, for the monitor window: what is on screen and how fast.
+    g = @(f, d) local_field(record, f, d);
+    si = struct( ...
+        'stimulus',       g('stimulus', ''), ...
+        'stim_type',      g('stim_type', ''), ...
+        'cone_isolation', g('cone_isolation', ''), ...
+        'seed',           g('seed', NaN), ...
+        'flicker_hz',     g('flicker_hz', NaN), ...
+        'noise_update_hz', g('noise_update_hz', NaN), ...
+        'refresh_hz',     refresh, ...
+        'stim_frames',    g('stim_frames', NaN), ...
+        'total_frames',   totalFrames, ...
+        'duration_s',     durS);
+end
+
+
+function v = local_field(s, f, d)
+    if isstruct(s) && isfield(s, f) && ~isempty(s.(f)), v = s.(f); else, v = d; end
 end
 
 
