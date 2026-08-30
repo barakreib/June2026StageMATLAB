@@ -20,13 +20,16 @@ function test_gui_smoke()
     % ---- button inventory / placement ----
     clr = btn('Clear all');
     rm  = btn('Remove epoch');
-    upd = btn('Update epochs  v');
+    aps = btn('Apply params to selected');
     add = btn('Add block  v');
-    assert(~isempty(clr) && ~isempty(rm) && ~isempty(upd), 'Clear all / Remove epoch / Update epochs exist');
+    assert(~isempty(clr) && ~isempty(rm) && ~isempty(aps), ...
+        'Clear all / Remove epoch / Apply params to selected exist');
     assert(isempty(local_btn(fig, 'New')), '"New" is gone -- Clear all took its place');
-    assert(isequal(rm.Parent, clr.Parent), 'Remove epoch and Clear all share one toolbar');
+    assert(isempty(local_btn(fig, 'Update epochs  v')), ...
+        '"Update epochs" is gone -- rows are edited directly or via Apply params to selected');
+    assert(isequal(rm.Parent, clr.Parent) && isequal(aps.Parent, rm.Parent), ...
+        'the row operations share one toolbar, under the rows they act on');
     assert(~isequal(rm.Parent, btn('Run experiment').Parent), 'that toolbar is not the bottom button row');
-    assert(isequal(upd.Parent, add.Parent), 'Update epochs sits beside Add block, above the table');
     clr.ButtonPushedFcn(clr, []);                 % empty protocol: clears without a confirm
     assert(isempty(proto.Data), 'Clear all on an empty protocol is a no-op');
 
@@ -97,21 +100,21 @@ function test_gui_smoke()
     assert(epochsFld.Value == 5, 'the epoch count of that block came back too');
     assert(strcmp(lst.Value, 'Greyscale Gaussian noise (full field)'), 'and its stimulus is selected');
 
-    % ---- edit up top, then Update epochs rewrites those rows instead of appending ----
+    % ---- edit up top, then Apply params to selected rewrites JUST those rows ----
     pTbl.Data{find(strcmp(n2, 'mu'), 1), 2} = '0.25';
     d2 = find(strcmp(n2, 'duration (s)'), 1);
     pTbl.Data{d2, 2} = '2';
     pTbl.CellEditCallback(pTbl, struct('Indices', [d2 2]));   % 2 s at 90 Hz -> 180 frames
-    epochsFld.Value = 3;
-    upd.ButtonPushedFcn(upd, []);
-    assert(size(proto.Data, 1) == 4, ...
-        sprintf('block 1 went 5 -> 3 epochs, block 2 kept 1 (got %d rows)', size(proto.Data, 1)));
-    assert(strcmp(proto.Data{1, muCol}, '0.25') && strcmp(proto.Data{1, sfCol}, '180'), ...
-        'the edited parameters landed on the epochs already in the table');
-    assert(~strcmp(proto.Data{4, muCol}, '0.25'), 'the other block was left alone');
-    assert(isequal(cellfun(@str2double, proto.Data(:, sdCol))', [2 3 4 7]), ...
-        'shrinking the block kept the leading seeds; the other block kept its own');
-    assert(isequal(proto.Selection, 1), 'the selection survives the update');
+    proto.Selection = [1 2];
+    aps.ButtonPushedFcn(aps, []);
+    assert(size(proto.Data, 1) == 6, 'apply-to-selected never changes the row count');
+    assert(strcmp(proto.Data{1, muCol}, '0.25') && strcmp(proto.Data{2, sfCol}, '180'), ...
+        'the edited parameters landed on the selected epochs');
+    assert(strcmp(proto.Data{3, muCol}, '0.4') && strcmp(proto.Data{6, sfCol}, '450'), ...
+        'unselected epochs were left alone');
+    assert(isequal(cellfun(@str2double, proto.Data(:, sdCol))', 2:7), ...
+        'every epoch kept its own seed through the bulk edit');
+    assert(isequal(proto.Selection(:)', [1 2]), 'the selection survives the update');
 
     % ---- Cancel / Run idle state ----
     cb = btn('Cancel');

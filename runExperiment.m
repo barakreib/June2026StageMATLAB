@@ -475,6 +475,8 @@ function local_reportCanvas(msg)
 % say so LOUDLY before an epoch runs. Best-effort: a reply we cannot parse changes nothing.
     try
         cv = [];
+        % receiveMessage returns the {type,event} wrapper struct; the NetEvent is .event
+        if isstruct(msg) && isfield(msg, 'event'), msg = msg.event; end
         if ~isempty(msg) && strcmp(char(msg.name), 'ok') && ~isempty(msg.arguments)
             cv = double(msg.arguments{1});
         end

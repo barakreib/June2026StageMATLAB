@@ -61,19 +61,21 @@ function mon = stimulusMonitor(parent)
         % flexes. Embedded in the main window's side panel the rows tighten, so the
         % timeline keeps a usable height.
         if embedded
-            g.RowHeight = {46, 40, 24, 180, '1x', 174, 36};
+            % 62: the headline panel holds 30+20 label rows + padding + panel borders;
+            % anything less clips the subtitle's descenders (seen at the rig, 46 was short)
+            g.RowHeight = {62, 40, 24, 180, '1x', 174, 36};
             g.RowSpacing = 4;
             g.Padding = [4 4 4 4];
         else
-            g.RowHeight  = {58, 46, 30, 226, '1x', 182, 64};
+            g.RowHeight  = {66, 46, 30, 226, '1x', 182, 64};
             g.RowSpacing = 6;
         end
 
         % ---- headline: where we are ----
         hp = uipanel(g);
-        hg = uigridlayout(hp, [2 1]); hg.RowHeight = {30, 20}; hg.Padding = [10 2 10 2]; hg.RowSpacing = 0;
+        hg = uigridlayout(hp, [2 1]); hg.RowHeight = {30, 'fit'}; hg.Padding = [10 2 10 2]; hg.RowSpacing = 0;
         h.epochLbl = uilabel(hg, 'Text', 'Waiting for a run...', 'FontSize', 20, 'FontWeight', 'bold');
-        h.blockLbl = uilabel(hg, 'Text', '', 'FontAngle', 'italic', 'FontColor', [0.45 0.45 0.45]);
+        h.blockLbl = uilabel(hg, 'Text', '', 'FontAngle', 'italic', 'FontColor', [0.55 0.55 0.55]);
 
         % ---- phase + its own clock ----
         pp2 = uigridlayout(g, [1 3]); pp2.ColumnWidth = {150, '1x', 190}; pp2.Padding = [10 2 10 2];
@@ -84,7 +86,7 @@ function mon = stimulusMonitor(parent)
 
         % ---- session clock ----
         h.clockLbl = uilabel(g, 'Text', '', 'FontName', local_monoFont(), ...
-            'FontColor', [0.30 0.30 0.30]);
+            'FontColor', [0.50 0.50 0.50]);   % mid-gray: readable on light AND dark themes
 
         % ---- what is on the screen ----
         sp = uipanel(g, 'Title', 'Stimulus');

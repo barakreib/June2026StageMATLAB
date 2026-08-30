@@ -19,9 +19,10 @@ function stimulusGUI(mode)
 % Epochs already in the table are EDITABLE, not just removable. Every column is live:
 % Label, this epoch's seed (seeded stimuli), and every parameter has its own column —
 % type in a cell and just that epoch changes (it splits out of its block; edit it back and
-% it re-merges). Clicking a row also loads its block into the top window for bulk edits
-% via "Update epochs" / "Update selected". Under the table, "Remove epoch" drops the
-% selected row — and the block with its last epoch — and "Clear all" empties the protocol.
+% it re-merges). For bulk edits, click a row to load its block into the top window, change
+% the parameters there, select the target rows and press "Apply params to selected".
+% Under the table, "Remove epoch" drops the selected row — and the block with its last
+% epoch — and "Clear all" empties the protocol.
 %
 % Parameters carry a redundant "duration (s)" row alongside stimFrames. Type seconds and the
 % frame count follows the refreshRate (and vice versa), so the presentation length stays
@@ -51,13 +52,13 @@ function stimulusGUI(mode)
 % it. During a presentation it shows three photodiode segments -- top: the projector FRAME
 % CLOCK (toggles every frame); middle: the STIMULUS UPDATE CLOCK (the legacy sync pattern,
 % dark outside the stimulus); bottom: the STIMULUS ENVELOPE (solid while stimulus frames
-% are on screen). On held screens (inter-stim / run end / startup) the bar is dark -- a
-% held frame is static, so there are no frame updates to report.
+% are on screen). On held screens (inter-stim / run end) the bar is dark -- a held frame
+% is static, so there are no frame updates to report.
 %
-% ON LAUNCH, the GUI probes the Stage server (bounded, never hangs): if found, it sends a
-% dark full-screen startup state (rig_config `startup_screen_rgb`) and loads the LED
-% preset named "startup" (rig_config led_presets -- default R/G dark, B duty 0.25 on the
-% 545 nm LED's row; EDIT THAT PRESET so the row matches your wiring).
+% ON LAUNCH the GUI touches NOTHING on the network -- no Stage-server probe, no LED
+% writes. The first contact with the Stage server is Run's own pre-flight. (An earlier
+% launch-time probe was removed at the user's request: it added a failure mode at boot
+% and the rig state belongs to Run / quick-set, not to opening a window.)
 %
 % The "stimulus protocol complete" Keep/Discard dialog appears ONCE, at the end of the whole
 % run — never between epochs, even when they carry different parameters. Discard removes
@@ -73,13 +74,18 @@ function stimulusGUI(mode)
 % Cancel button (bottom middle).
 %
 % The SCREENS & LEDS band (bottom) sets, per phase — pre-stim | stimulus | post-stimulus |
-% inter-stim | end of stim — the 4x3 LED duty grid (preset dropdown to fill it) and, for
-% every phase but the stimulus itself, the full-screen RGB (three boxes + a color picker).
-% "copy <phase>" buttons pull another phase's grid + screen across. "sync and lock B
-% channels" makes the far-right master B column drive every grid's B channel (the
-% individual B columns gray out). An all-dark "end of stim" grid = the classic dark+close
-% LED teardown; anything lit there stays ON after the run (driver handed off as base
-% `rig`).
+% inter-stim | end of stim — each LED's R/G duty (preset dropdown to fill it) and, for
+% every phase but the stimulus itself, the RGBval column (a one-column table: R, G, B
+% rows + a click-to-pick swatch cell, aligned row-for-row with the LED table). The B
+% channel is GLOBAL: the far-right B column drives every phase's B (it carries the
+% sync/photodiode light, so it never varies by phase). LED row names show once, on the
+% pre-stim table; DOUBLE-CLICK a row name to rename that LED everywhere (saved to
+% rig_config `led_names`). "link with" (above each screen phase's table): tick it, then
+% click another LED table — the linked tables share one set of values from then on
+% (editing any one edits them all; untick to unlink). "Set now"/"Off now" above the
+% stimulus table push that grid (+ global B) to the rig immediately. An all-dark "end of
+% stim" grid = the classic dark+close LED teardown; anything lit there stays ON after
+% the run (driver handed off as base `rig`).
 
     if nargin >= 1 && ischar(mode) && strcmp(mode, '__selftest__')
         selftest();
@@ -91,6 +97,7 @@ function stimulusGUI(mode)
     blocks   = local_emptyBlocks();
     curEntry = reg(1);
     presets  = local_loadPresets();      % LED value presets from rig_config.json
+    ledNames = local_ledNames();         % user-editable LED row names (rig_config led_names)
     expDir    = fullfile(fileparts(mfilename('fullpath')), 'experiments');
     if ~exist(expDir, 'dir'), mkdir(expDir); end
     stateFile = fullfile(prefdir, 'neitzStimulusGUI_lastSession.json');
@@ -101,6 +108,8 @@ function stimulusGUI(mode)
     cancelRequested = false;   % set by the Cancel button, polled by runExperiment (see onCancel)
     suspendSelCb    = false;   % re-entrancy guard while the epoch table's Selection is set in code
     monitor         = [];      % the live "Session monitor" window (stimulusMonitor)
+    linkGroup = struct('pre', 0, 'post', 0, 'iti', 0, 'final', 0);  % LED-table link groups (0 = unlinked)
+    linkPick  = '';            % section whose "link with" tick is waiting for a partner click
 
     buildUI();
     openMonitor();      % the embedded Session monitor (right panel) + its stimProgress hooks
@@ -108,7 +117,8 @@ function stimulusGUI(mode)
     loadState();        % restore the last-used settings + protocol, if any
     refreshProtocol();  % unconditional: with no saved state loadState returns early, and the
                         % table buttons would otherwise start enabled over an empty protocol
-    applyStartupState();  % Stage server found -> dark startup screen + "startup" LED preset
+    % NO network activity at launch (no Stage probe, no LED writes) -- Run's pre-flight
+    % makes the first contact with the Stage server.
 
     % ================= nested callbacks (share reg / blocks / curEntry / h) =================
     function buildUI()
@@ -125,26 +135,26 @@ function stimulusGUI(mode)
         top.Padding       = [0 0 0 0];
         top.ColumnSpacing = 8;
 
-        % ---------------- left: stimulus list + quick-load slots ----------------
+        % ---------------- left: stimulus list (+ Save/Load) + quick-load slots ----------------
         lc = uigridlayout(top, [2 1]);
         lc.RowHeight  = {'1x', 330};
         lc.Padding    = [0 0 0 0];
         lc.RowSpacing = 6;
         lp = uipanel(lc, 'Title', 'Stimuli');
-        lg = uigridlayout(lp, [2 1]); lg.RowHeight = {'1x', 74};
+        lg = uigridlayout(lp, [2 1]); lg.RowHeight = {'1x', 34}; lg.RowSpacing = 2;
         h.list = uilistbox(lg, 'Items', {reg.name}, 'ValueChangedFcn', @(s,e) onSelectStim());
-        uilabel(lg, 'Text', sprintf(['%d stimuli. Pick one, set its parameters and how many ' ...
-            'epochs, then Add block. One stimulus type per protocol.'], numel(reg)), ...
-            'WordWrap', 'on', 'FontAngle', 'italic');
+        lb = uigridlayout(lg, [1 2]); lb.Padding = [0 0 0 0]; lb.ColumnSpacing = 4;
+        h.saveBtn = uibutton(lb, 'Text', 'Save...', 'ButtonPushedFcn', @(s,e) onSave());
+        h.loadBtn = uibutton(lb, 'Text', 'Load...', 'ButtonPushedFcn', @(s,e) onLoad());
         buildQuickLoad(lc);
 
         % ---------------- middle: the protocol builder ----------------
-        rp = uigridlayout(top, [10 1]);
+        rp = uigridlayout(top, [7 1]);
         % Row 3 (the parameter table) is resized to its content by showEntry: exactly tall
         % enough that refreshRate is never scrolled out of sight -- it is half of the duration
         % relationship -- and no taller, so short stimuli hand the slack to the epoch table,
         % which is the row that flexes. Tight RowSpacing buys that table a few more rows.
-        rp.RowHeight  = {28, 24, local_paramTableHeight(8), 40, 20, '1x', 34, 30, 32, 40};
+        rp.RowHeight  = {28, 24, local_paramTableHeight(8), 40, 20, '1x', 34};
         rp.RowSpacing = 4;
         rp.Padding    = [0 0 0 0];
         h.rightGrid   = rp;
@@ -164,7 +174,7 @@ function stimulusGUI(mode)
             'ColumnEditable', [false true], 'ColumnWidth', {180, 220}, 'RowName', {}, ...
             'CellEditCallback', @(s, e) onParamEdit(e));
 
-        er = uigridlayout(rp, [1 6]); er.ColumnWidth = {60, 70, 55, '1x', 130, 130};
+        er = uigridlayout(rp, [1 5]); er.ColumnWidth = {60, 70, 55, '1x', 130};
         er.Padding = [6 3 6 3];
         uilabel(er, 'Text', 'Epochs:');
         h.epochs = uieditfield(er, 'numeric', 'Value', 5, 'Limits', [1 Inf], 'RoundFractionalValues', 'on', ...
@@ -175,10 +185,8 @@ function stimulusGUI(mode)
         h.label = uieditfield(er, 'text', 'Value', '');
         h.addBtn = uibutton(er, 'Text', 'Add block  v', 'ButtonPushedFcn', @(s,e) onAddBlock(), ...
             'Tooltip', 'Append this stimulus, these parameters and this many epochs as a NEW block.');
-        h.updateBtn = uibutton(er, 'Text', 'Update epochs  v', 'ButtonPushedFcn', @(s,e) onUpdateEpochs(), ...
-            'Tooltip', ['Push these parameters, label and epoch count onto epochs ALREADY in the ' ...
-                        'table, instead of adding more. Acts on the selected epoch''s block; with ' ...
-                        'nothing selected it acts on the only block, or asks before touching all.']);
+        % ("Update epochs" is gone: rows in the table are edited directly, and bulk edits
+        %  go through "Apply params to selected" -- which sits under the rows it changes.)
 
         nr = uigridlayout(rp, [1 2]); nr.ColumnWidth = {'1x', 'fit'}; nr.Padding = [6 0 6 0];
         h.seedNote  = uilabel(nr, 'Text', '', 'FontAngle', 'italic');
@@ -192,14 +200,14 @@ function stimulusGUI(mode)
         % stimuli) and the cells are EDITABLE -- typing in a cell rewrites just that epoch.
         % refreshProtocol() rebuilds the columns to match the protocol's stimulus type.
         h.protoTable = uitable(rp, 'ColumnName', {'Epoch #', 'Label'}, ...
-            'ColumnWidth', {56, 110}, 'RowName', {}, 'SelectionType', 'row', ...
+            'ColumnWidth', {64, '1x'}, 'RowName', {}, 'SelectionType', 'row', ...
             'Multiselect', 'on', 'SelectionChangedFcn', @(s,e) onSelectEpoch(), ...
             'CellEditCallback', @(s, e) onEpochCellEdit(e));
 
         % Row operations sit with the rows they act on, under the table.
-        tb = uigridlayout(rp, [1 4]); tb.ColumnWidth = {140, 130, 110, '1x'};
+        tb = uigridlayout(rp, [1 4]); tb.ColumnWidth = {170, 130, 110, '1x'};
         tb.Padding = [6 2 6 2]; tb.ColumnSpacing = 8;
-        h.updSelBtn = uibutton(tb, 'Text', 'Update selected', 'ButtonPushedFcn', @(s,e) onUpdateSelected(), ...
+        h.updSelBtn = uibutton(tb, 'Text', 'Apply params to selected', 'ButtonPushedFcn', @(s,e) onUpdateSelected(), ...
             'Tooltip', ['Apply the parameters and label above to JUST the selected epoch(s) ' ...
                         '(shift/ctrl-click for several). Those epochs are split into their own ' ...
                         'block, so one epoch can differ from its neighbours. The run is not ' ...
@@ -208,52 +216,35 @@ function stimulusGUI(mode)
             'Tooltip', 'Drop the selected epoch. Removing a block''s last epoch removes the block.');
         h.clearBtn = uibutton(tb, 'Text', 'Clear all', 'ButtonPushedFcn', @(s,e) onClearAll(), ...
             'Tooltip', 'Empty the protocol and start over (asks first).');
-        uilabel(tb, 'Text', 'Click an epoch to load it above, edit, then Update.', ...
+        uilabel(tb, 'Text', 'Edit cells directly, or select rows and apply the panel above.', ...
             'FontAngle', 'italic', 'FontColor', [0.45 0.45 0.45]);
 
-        % ----- Stage/OpenGL server host (blank = this machine; an IPv4 = remote) -----
-        sr = uigridlayout(rp, [1 3]); sr.ColumnWidth = {'fit', 200, '1x'}; sr.Padding = [6 3 6 3];
-        uilabel(sr, 'Text', 'Stage host (IPv4):');
-        h.stageHost = uieditfield(sr, 'text', 'Value', char(loadRigConfig('stage_host', 'localhost')), ...
-            'Tooltip', ['The Stage/OpenGL server computer. Blank / "localhost" = this machine; an ' ...
-                        'IPv4 (e.g. 192.168.0.49) connects to that computer. Saved to rig_config on Run.']);
-        uilabel(sr, 'Text', 'blank / localhost = this machine', 'FontAngle', 'italic', 'FontColor', [0.45 0.45 0.45]);
-
-        % Two independent enables, ON by default. Unchecking one makes Run skip
-        % exactly those lines: Clampex off -> no acquisition trigger; LED driver
-        % off -> runExperiment never opens NeitzLedRig (LEDs left untouched).
-        dr = uigridlayout(rp, [1 3]); dr.ColumnWidth = {230, 160, '1x'};
-        dr.Padding = [6 2 6 2]; dr.ColumnSpacing = 24;
-        h.triggerAcq = uicheckbox(dr, 'Text', 'Clampex acquisition', 'Value', true, 'FontWeight', 'bold', ...
-            'Tooltip', ['ON: Run triggers Clampex acquisition each epoch. OFF: present via the Stage ' ...
-                        'host only, no Clampex keystrokes (local dry run / no rig).']);
-        h.ledEnable = uicheckbox(dr, 'Text', 'LED driver', 'Value', true, 'FontWeight', 'bold', ...
-            'Tooltip', ['ON: Run opens NeitzLedRig and applies the LED grids during the session. ' ...
-                        'OFF: the LED driver is not touched by Run.']);
-        uilabel(dr, 'Text', '');
-
-        % "New" is gone: "Clear all" under the table does the same job, next to the rows it clears.
-        bg = uigridlayout(rp, [1 5]); bg.ColumnWidth = {'1x', 120, 120, '1.4x', 110};
-        bg.Padding = [6 4 6 4];
-        uilabel(bg, 'Text', '');   % spacer -- keeps Run / Cancel over on the right
-        h.saveBtn = uibutton(bg, 'Text', 'Save...', 'ButtonPushedFcn', @(s,e) onSave());
-        h.loadBtn = uibutton(bg, 'Text', 'Load...', 'ButtonPushedFcn', @(s,e) onLoad());
-        h.runBtn  = uibutton(bg, 'Text', 'Run experiment', 'ButtonPushedFcn', @(s,e) onRun(), ...
+        % ---------------- right: the Session monitor + Run/Cancel under it ----------------
+        rc = uigridlayout(top, [2 1]);
+        rc.RowHeight  = {'1x', 46};
+        rc.Padding    = [0 0 0 0];
+        rc.RowSpacing = 4;
+        h.monPanel = uipanel(rc, 'Title', 'Session monitor');
+        rb = uigridlayout(rc, [1 2]); rb.ColumnWidth = {'1x', 120};
+        rb.Padding = [0 0 0 0]; rb.ColumnSpacing = 8;
+        h.runBtn  = uibutton(rb, 'Text', 'Run experiment', 'ButtonPushedFcn', @(s,e) onRun(), ...
             'BackgroundColor', [0.20 0.55 0.30], 'FontColor', 'w', 'FontWeight', 'bold', ...
             'Interruptible', 'on');   % MUST stay 'on' -- it is what lets Cancel fire mid-run
         % THE one and only Cancel button (the embedded monitor has none).
-        h.cancelBtn = uibutton(bg, 'Text', 'Cancel', 'ButtonPushedFcn', @(s,e) onCancel(), ...
+        h.cancelBtn = uibutton(rb, 'Text', 'Cancel', 'ButtonPushedFcn', @(s,e) onCancel(), ...
             'BackgroundColor', [0.70 0.15 0.15], 'FontColor', 'w', 'FontWeight', 'bold', ...
             'Enable', 'off', 'BusyAction', 'queue', ...
             'Tooltip', ['Stop the run at the next clean epoch boundary. An epoch whose Clampex ' ...
                         'sweep is already triggered is always finished and logged, so no .abf is ' ...
                         'left without its manifest row.']);
 
-        % ---------------- right: the Session monitor, embedded ----------------
-        h.monPanel = uipanel(top, 'Title', 'Session monitor');
-
-        % ---------------- bottom: screens & LEDs around the stimulus ----------------
-        buildPhaseBand(outer);
+        % ---------------- bottom: screens & LEDs band + the Settings panel ----------------
+        bot = uigridlayout(outer, [1 2]);
+        bot.ColumnWidth   = {'1x', 480};
+        bot.Padding       = [0 0 0 0];
+        bot.ColumnSpacing = 8;
+        buildPhaseBand(bot);
+        buildSettings(bot);
 
         % Locked / restored wholesale by lockUI-unlockUI for the duration of a run.
         h.lockList  = gobjects(0);
@@ -286,13 +277,47 @@ function stimulusGUI(mode)
                         'Click a slot to load that experiment.']);
     end
 
+    function buildSettings(parent)
+        % Session-wide switches and addresses, bottom right (same width as the monitor):
+        % Stage host, the Clampex / LED-driver enables, and the LED driver's mode + port.
+        sp = uipanel(parent, 'Title', 'Settings');
+        sg = uigridlayout(sp, [5 2]);
+        sg.RowHeight   = {30, 26, 26, 30, 30};
+        sg.ColumnWidth = {150, '1x'};
+        sg.Padding     = [8 6 8 6];
+        sg.RowSpacing  = 6;
+        uilabel(sg, 'Text', 'Stage host (IPv4):');
+        h.stageHost = uieditfield(sg, 'text', 'Value', char(loadRigConfig('stage_host', 'localhost')), ...
+            'Tooltip', ['The Stage/OpenGL server computer. Blank / "localhost" = this machine; an ' ...
+                        'IPv4 (e.g. 192.168.0.49) connects to that computer. Saved to rig_config on Run.']);
+        % Two independent enables, ON by default. Unchecking one makes Run skip exactly
+        % those lines: Clampex off -> no acquisition trigger; LED driver off ->
+        % runExperiment never opens NeitzLedRig (LEDs left untouched).
+        h.triggerAcq = uicheckbox(sg, 'Text', 'Clampex acquisition', 'Value', true, 'FontWeight', 'bold', ...
+            'Tooltip', ['ON: Run triggers Clampex acquisition each epoch. OFF: present via the Stage ' ...
+                        'host only, no Clampex keystrokes (local dry run / no rig).']);
+        h.triggerAcq.Layout.Column = [1 2];
+        h.ledEnable = uicheckbox(sg, 'Text', 'LED driver', 'Value', true, 'FontWeight', 'bold', ...
+            'Tooltip', ['ON: Run opens NeitzLedRig and applies the LED grids during the session. ' ...
+                        'OFF: the LED driver is not touched by Run.']);
+        h.ledEnable.Layout.Column = [1 2];
+        uilabel(sg, 'Text', 'LED driver mode:');
+        h.ledMode = uidropdown(sg, 'Items', {'off (0)', 'DC red (1)', 'video RGB (2)', 'video RGB + sync (3)'}, ...
+            'ItemsData', [0 1 2 3], 'Value', 2);
+        uilabel(sg, 'Text', 'LED driver port:');
+        h.ledPort = uieditfield(sg, 'text', 'Value', char(loadRigConfig('led_port', 'COM3')), ...
+            'Tooltip', ['LED-driver port (default: rig_config led_port -- hard-coded is fastest). ' ...
+                        'Type AUTO to probe for the FPGA instead (slower), or a /dev/cu.* node on macOS.']);
+    end
+
     function buildPhaseBand(parent)
         % The screens-&-LEDs band: one section per phase -- pre-stim | stimulus |
-        % post-stimulus | inter-stim | end of stim -- each with a preset dropdown, its 4x3
-        % LED duty grid, and (except "stimulus", whose screen IS the stimulus) a screen
-        % column: R/G/B of the full-screen value with a color picker under it. The far
-        % right holds the master B column: with "sync and lock B channels" ticked it
-        % drives every grid's B channel and the individual B columns gray out.
+        % post-stimulus | inter-stim | end of stim -- each with a preset dropdown, a
+        % "link with" checkbox (tick + click another table to keep two grids identical;
+        % the stimulus section has the Set now / Off now quick-set buttons there
+        % instead), its R/G LED duty table, and (except "stimulus", whose screen IS the
+        % stimulus) the RGBval column. The far right holds the GLOBAL B column, which
+        % drives every phase's B channel.
         band = uipanel(parent, 'Title', ...
             'Screens & LEDs  (LED duty + screen RGB are linear 0..1; screens exclude the sync bar)');
         bgl = uigridlayout(band, [2 1]);
@@ -300,30 +325,11 @@ function stimulusGUI(mode)
         bgl.Padding    = [6 2 6 2];
         bgl.RowSpacing = 2;
 
-        % --- strip: driver controls + status + the B-channel lock ---
-        st = uigridlayout(bgl, [1 9]);
-        st.ColumnWidth   = {'fit', 'fit', 130, 'fit', 100, 'fit', 'fit', '1x', 'fit'};
-        st.Padding       = [0 0 0 0];
-        st.ColumnSpacing = 8;
-        uilabel(st, 'Text', 'LED driver:', 'FontWeight', 'bold');
-        uilabel(st, 'Text', 'Mode');
-        h.ledMode = uidropdown(st, 'Items', {'off (0)', 'DC red (1)', 'video RGB (2)', 'video RGB + sync (3)'}, ...
-            'ItemsData', [0 1 2 3], 'Value', 2);
-        uilabel(st, 'Text', 'Port');
-        h.ledPort = uieditfield(st, 'text', 'Value', char(loadRigConfig('led_port', 'COM3')), ...
-            'Tooltip', ['LED-driver port (default: rig_config led_port -- hard-coded is fastest). ' ...
-                        'Type AUTO to probe for the FPGA instead (slower), or a /dev/cu.* node on macOS.']);
-        h.ledSetNow = uibutton(st, 'Text', 'Set now', 'ButtonPushedFcn', @(s,e) onLedSetNow(), ...
-            'Tooltip', ['Quick set: push the STIMULUS grid and Mode to the rig immediately, ' ...
-                        'without running an experiment.']);
-        h.ledOffNow = uibutton(st, 'Text', 'Off now', 'ButtonPushedFcn', @(s,e) onLedOffNow(), ...
-            'Tooltip', 'Quick set: mode 0 (all LEDs dark) immediately. Grid values are kept.');
-        h.ledStatus = uilabel(st, 'Text', '', 'FontAngle', 'italic', ...
+        % --- strip: just the status line (driver mode/port live in Settings; the
+        %     Set now / Off now quick-set buttons sit above the stimulus LED table) ---
+        h.ledStatus = uilabel(bgl, 'Text', '', 'FontAngle', 'italic', ...
             'FontColor', [0.45 0.45 0.45], 'HorizontalAlignment', 'right');
-        h.syncB = uicheckbox(st, 'Text', 'sync and lock B channels', 'Value', false, ...
-            'ValueChangedFcn', @(s, e) onSyncB(), ...
-            'Tooltip', ['ON: the far-right B column drives the B channel of EVERY phase grid ' ...
-                        'and the individual B columns lock (grayed). OFF: each grid''s B is its own.']);
+        % (The B channel is ALWAYS global -- the far-right B column drives every phase.)
 
         % --- the five phase sections + the master B column ---
         sc = uigridlayout(bgl, [1 7]);
@@ -341,19 +347,26 @@ function stimulusGUI(mode)
         h.preStim  = h.phDur.pre;
         h.postStim = h.phDur.post;
         h.itp      = h.phDur.iti;
-        h.ledGrid  = h.phGrid.stim;    % the during-stimulus grid = the "main" LED grid
-        addCopyButtons();
     end
 
     function buildPhaseSection(parent, key, ttl, durDefault)
+        % Each section, top to bottom: title (+duration), preset dropdown, a link row
+        % ("link with" checkbox -- the stimulus section carries the Set now / Off now
+        % quick-set buttons there instead), then the LED table -- R and G only (B is
+        % GLOBAL, the far-right column). Every phase but the stimulus also gets an
+        % RGBval column: a one-column TABLE (rows 1-3 = the full-screen R/G/B, row 4 =
+        % the color-picker swatch cell), so its header and rows align pixel-for-pixel
+        % with the LED table's. LED row names show ONCE, on the pre-stim table
+        % (double-click a name there to rename that LED everywhere).
         hasScreen = ~strcmp(key, 'stim');
+        hasNames  = strcmp(key, 'pre');
         sg = uigridlayout(parent, [4 1]);
-        sg.RowHeight  = {20, 24, 148, 24};
+        sg.RowHeight  = {26, 24, 20, 136};
         sg.Padding    = [0 0 0 0];
         sg.RowSpacing = 2;
         % title (+ its duration, for the phases that have one)
         tr = uigridlayout(sg, [1 4]);
-        tr.ColumnWidth = {'fit', '1x', 'fit', 46};
+        tr.ColumnWidth = {'fit', '1x', 'fit', 52};
         tr.Padding = [2 0 2 0]; tr.ColumnSpacing = 4;
         uilabel(tr, 'Text', ttl, 'FontWeight', 'bold');
         uilabel(tr, 'Text', '');
@@ -365,76 +378,78 @@ function stimulusGUI(mode)
         end
         h.phPreset.(key) = uidropdown(sg, 'Items', local_presetNames(presets), ...
             'Tag', ['phPreset_' key], 'ValueChangedFcn', @(s, e) onPhasePreset(key), ...
-            'Tooltip', 'Fill this LED grid from a rig_config.json preset.');
+            'Tooltip', 'Fill this LED grid from a rig_config.json preset (its B column fills the global B).');
+        if hasScreen
+            % link row: tick, then click another LED table to keep the two identical
+            h.phLink.(key) = uicheckbox(sg, 'Text', 'link with', 'Value', false, 'FontSize', 10, ...
+                'Tag', ['phLink_' key], 'ValueChangedFcn', @(s, e) onLinkToggle(key), ...
+                'Tooltip', ['Tick, then CLICK another LED table to link the two: linked tables ' ...
+                            'share one set of values (editing any one changes them all). ' ...
+                            'The clicked table''s values win at link time. Untick to unlink.']);
+        else
+            % the stimulus section: quick-set buttons directly above its LED table
+            qs = uigridlayout(sg, [1 2]); qs.Padding = [0 0 0 0]; qs.ColumnSpacing = 3;
+            h.ledSetNow = uibutton(qs, 'Text', 'Set now', 'FontSize', 10, ...
+                'ButtonPushedFcn', @(s,e) onLedSetNow(), ...
+                'Tooltip', ['Quick set: push THIS stimulus grid (R/G below + the global B ' ...
+                            'column) and the Settings mode to the rig immediately, without ' ...
+                            'running an experiment.']);
+            h.ledOffNow = uibutton(qs, 'Text', 'Off now', 'FontSize', 10, ...
+                'ButtonPushedFcn', @(s,e) onLedOffNow(), ...
+                'Tooltip', 'Quick set: mode 0 (all LEDs dark) immediately. Grid values are kept.');
+        end
+        if hasNames, tw = 178; else, tw = 116; end     % pre carries the LED-name gutter
         if hasScreen
             cg = uigridlayout(sg, [1 2]);
-            cg.ColumnWidth = {190, 52};
+            cg.ColumnWidth = {tw, 70};
             cg.Padding = [0 0 0 0]; cg.ColumnSpacing = 3;
         else
             cg = uigridlayout(sg, [1 1]);
-            cg.ColumnWidth = {190};
+            cg.ColumnWidth = {tw};
             cg.Padding = [0 0 0 0];
         end
-        h.phGrid.(key) = uitable(cg, 'Data', zeros(4, 3), 'ColumnName', {'R', 'G', 'B'}, ...
-            'RowName', {'LED 0', 'LED 1', 'LED 2', 'LED 3'}, 'ColumnEditable', [true true true], ...
-            'ColumnWidth', {42, 42, 42}, 'CellEditCallback', @(s, e) onPhaseGridEdit(key, e), ...
+        if hasNames, rn = ledNames; else, rn = {}; end
+        h.phGrid.(key) = uitable(cg, 'Data', zeros(4, 2), 'ColumnName', {'R', 'G'}, ...
+            'RowName', rn, 'ColumnEditable', [true true], ...
+            'ColumnWidth', {56, 56}, 'CellEditCallback', @(s, e) onPhaseGridEdit(key, e), ...
+            'DoubleClickedFcn', @(s, e) onLedNameDblClick(e), ...
+            'ClickedFcn', @(s, e) onPhaseTableClick(key), ...
             'Tag', ['phGrid_' key], ...
-            'Tooltip', sprintf('%s: per-LED duty (0..1) on the R/G/B timing channels.', ttl));
+            'Tooltip', sprintf('%s: per-LED duty (0..1) on the R/G timing channels (B: far-right global column).', ttl));
         if hasScreen
-            scg = uigridlayout(cg, [4 1]);
-            scg.RowHeight  = {24, 24, 24, 24};
-            scg.Padding    = [0 22 0 0];    % top pad ~ the table header, so rows line up
-            scg.RowSpacing = 3;
-            h.phScr.(key) = gobjects(1, 3);
-            chan = 'RGB';
-            for ci = 1:3
-                h.phScr.(key)(ci) = uieditfield(scg, 'numeric', 'Value', 0, 'Limits', [0 1], ...
-                    'ValueChangedFcn', @(s, e) onPhaseScreen(key), 'FontSize', 11, ...
-                    'Tooltip', sprintf('Full-screen %c during %s (linear 0..1).', chan(ci), ttl));
-            end
-            h.phSw.(key) = uibutton(scg, 'Text', '', 'BackgroundColor', [0 0 0], ...
-                'ButtonPushedFcn', @(s, e) onPhaseSwatch(key), ...
-                'Tooltip', 'Pick the screen color (fills the R/G/B boxes above).');
+            % RGBval as a one-column TABLE: same widget as the LED grid, so the header
+            % and all four rows align identically (R~LED row 1, G~2, B~3, swatch~4).
+            h.phScrTbl.(key) = uitable(cg, 'Data', {0; 0; 0; ''}, 'ColumnName', {'RGBval'}, ...
+                'RowName', {}, 'ColumnEditable', true, 'ColumnWidth', {64}, ...
+                'CellEditCallback', @(s, e) onScreenCellEdit(key, e), ...
+                'ClickedFcn', @(s, e) onScreenClick(key, e), ...
+                'Tag', ['phScr_' key], ...
+                'Tooltip', sprintf(['Full-screen value during %s (linear 0..1): rows are R, G, B; ' ...
+                                    'the bottom cell shows the color -- click it to pick.'], ttl));
+            updateSwatch(key);
         end
-        % row 4 (copy buttons) is filled by addCopyButtons once every section exists
-        h.phCopyRow.(key) = uigridlayout(sg, [1 3]);
-        h.phCopyRow.(key).Padding = [0 0 0 0];
-        h.phCopyRow.(key).ColumnSpacing = 3;
     end
 
     function buildMasterB(parent)
+        % The GLOBAL B column, always on the far right: one duty per LED, driving the B
+        % channel of EVERY phase (it carries the sync/photodiode light, which never
+        % varies by phase). The table sits in a fixed-width cell exactly as wide as its
+        % one column, so there is no dead black strip to its right.
         mg = uigridlayout(parent, [4 1]);
-        mg.RowHeight  = {20, 24, 148, 24};
+        mg.RowHeight  = {26, 24, 20, 136};
         mg.Padding    = [0 0 0 0];
         mg.RowSpacing = 2;
-        uilabel(mg, 'Text', 'B (locked)', 'FontWeight', 'bold', 'HorizontalAlignment', 'center', ...
-            'Tooltip', 'Master B column: drives every grid''s B channel while "sync and lock B channels" is on.');
+        uilabel(mg, 'Text', 'B (all phases)', 'FontWeight', 'bold', ...
+            'Tooltip', 'Global B column: one duty per LED, used during every phase.');
         uilabel(mg, 'Text', '');
-        h.masterB = uitable(mg, 'Data', zeros(4, 1), 'ColumnName', {'B'}, ...
-            'RowName', {'LED 0', 'LED 1', 'LED 2', 'LED 3'}, 'ColumnEditable', true, ...
-            'ColumnWidth', {42}, 'Enable', 'off', 'Tag', 'masterB', ...
+        uilabel(mg, 'Text', '');
+        ig = uigridlayout(mg, [1 1]);
+        ig.ColumnWidth = {62};
+        ig.Padding = [0 0 0 0];
+        h.masterB = uitable(ig, 'Data', zeros(4, 1), 'ColumnName', {'B'}, ...
+            'RowName', {}, 'ColumnEditable', true, ...
+            'ColumnWidth', {56}, 'Tag', 'masterB', ...
             'CellEditCallback', @(s, e) onMasterBEdit(e));
-        uilabel(mg, 'Text', '');
-    end
-
-    function addCopyButtons()
-        % "copy <phase>" buttons under each SCREEN phase: pull that phase's grid + screen
-        % color into this one. (The stimulus section has no screen and its grid is the main
-        % grid -- it gets no copy row.)
-        names = struct('pre', 'pre-stim', 'post', 'post-stim', 'iti', 'inter-stim', 'final', 'end');
-        keys  = {'pre', 'post', 'iti', 'final'};
-        for di = 1:numel(keys)
-            dst    = keys{di};
-            others = keys(~strcmp(keys, dst));
-            for si = 1:numel(others)
-                src = others{si};
-                uibutton(h.phCopyRow.(dst), 'Text', ['copy ' names.(src)], 'FontSize', 10, ...
-                    'Tag', sprintf('copy_%s_from_%s', dst, src), ...
-                    'ButtonPushedFcn', @(s, e) onCopyPhase(dst, src), ...
-                    'Tooltip', sprintf('Copy the %s LED grid and screen color into %s.', ...
-                                       names.(src), names.(dst)));
-            end
-        end
     end
 
     function onSelectStim()
@@ -456,7 +471,7 @@ function stimulusGUI(mode)
 
     function onSelectEpoch()
         % Clicking an epoch loads its block back into the top window -- stimulus, parameters,
-        % label and epoch count -- so it can be edited and pushed back with "Update epochs".
+        % label and epoch count -- for bulk edits via "Apply params to selected".
         if suspendSelCb, return; end
         sel = h.protoTable.Selection;
         if isempty(sel), return; end
@@ -536,7 +551,6 @@ function stimulusGUI(mode)
         % Nothing in the table means nothing to update, remove or clear.
         onOff = {'off', 'on'};
         e = onOff{1 + ~isempty(blocks)};
-        h.updateBtn.Enable = e;
         h.updSelBtn.Enable = e;
         h.removeBtn.Enable = e;
         h.clearBtn.Enable  = e;
@@ -550,159 +564,230 @@ function stimulusGUI(mode)
                                                   strtrim(char(h.cellName.Value))));
     end
 
-    % ================= startup state: defined dark screen + background LED =================
-    function applyStartupState()
-        % As soon as the GUI detects the Stage server, put the rig into a DEFINED state:
-        % full-screen startup RGB (rig_config `startup_screen_rgb`, default black; the
-        % sync-bar column stays dark) and the LED preset named "startup" (rig_config
-        % led_presets; default: all R/G channels 0, B duty 0.25 on the 545 nm LED's row).
-        % Everything here is best-effort and BOUNDED -- no server, a wedged server, or no
-        % LED driver must never hang or break GUI launch; the status line says what
-        % happened either way.
-        drawnow;                              % paint the window before any network wait
-        host = stageHost();
-        if ~local_portOpen(host, 5678, 400)
-            setLedStatus(sprintf('Stage server not detected at %s -- startup screen skipped.', ...
-                host), [0.45 0.45 0.45]);
-            return;
-        end
-        [alive, cv] = local_stageAnswers(host, 5678, 2);
-        if ~alive
-            setLedStatus(sprintf(['Stage server at %s accepted but did not answer -- ' ...
-                'startup screen skipped.'], host), [0.85 0.45 0.10]);
-            return;
-        end
-        % The probe's reply IS the canvas size: report it, and flag a server that is not
-        % running at the DLP's native diamond resolution (rig_config canvas_size).
-        cvNote = '';
-        if numel(cv) == 2
-            cvNote = sprintf(' (canvas %d x %d)', cv(1), cv(2));
-            want = double(reshape(loadRigConfig('canvas_size', [912 1140]), 1, []));
-            if numel(want) == 2 && ~isequal(cv(:)', want)
-                cvNote = sprintf(' (canvas %d x %d -- rig_config expects %d x %d!)', ...
-                                 cv(1), cv(2), want(1), want(2));
-            end
-        end
-        try
-            c = stageClientShared('get');
-            stageHoldScreen(c, local_coerceRGB(loadRigConfig('startup_screen_rgb', [0 0 0])), 60);
-            stageClientShared('release');     % free the single-client server again
-            msg = sprintf('Startup: screen set (dark) on %s%s.', host, cvNote);
-        catch err
-            stageClientShared('release');
-            setLedStatus(['Startup screen failed: ' err.message], [0.85 0.45 0.10]);
-            return;
-        end
-        k = find(strcmp({presets.name}, 'startup'), 1);
-        if isempty(k)
-            msg = [msg '  (No "startup" LED preset in rig_config -- LEDs untouched.)'];
-        else
-            try
-                r    = quickRig();
-                vals = local_coerce43(presets(k).values);
-                cols = {'r', 'g', 'b'};
-                for li = 1:4
-                    for ci = 1:3
-                        r.setIntensity(li - 1, cols{ci}, vals(li, ci));
-                    end
-                end
-                r.setMode(h.ledMode.Value);
-                msg = [msg '  LEDs -> "startup" preset.'];
-            catch
-                releaseQuickRig();            % drop a half-open handle; no popup at launch
-                msg = [msg '  (LED driver not reachable -- startup preset skipped.)'];
-            end
-        end
-        setLedStatus(msg, [0.13 0.45 0.20]);
+    % ============== screens & LEDs band (per-phase grids + screen colors) ==============
+    function g = phaseGrid43(key)
+        % A phase's full 4x3 grid: R,G from its own table + the GLOBAL B column.
+        d = h.phGrid.(key).Data;
+        g = local_coerce43([double(d(:, 1:2)), double(h.masterB.Data(:))]);
     end
 
-    % ============== screens & LEDs band (per-phase grids + screen colors) ==============
     function onPhaseGridEdit(key, evt)
-        % Keep every cell a clamped number; a locked B column cannot be edited at all
-        % (ColumnEditable), so nothing needs guarding here beyond the value itself.
+        % Keep every cell a clamped number (the tables carry R and G only; B is global),
+        % then mirror the whole grid to any tables linked with this one.
         d = h.phGrid.(key).Data;
         if isempty(evt.Indices), return; end
         v = double(evt.NewData);
         if ~isscalar(v) || ~isfinite(v), v = 0; end
         d(evt.Indices(1), evt.Indices(2)) = min(max(v, 0), 1);
         h.phGrid.(key).Data = d;
+        syncLinked(key);
     end
 
     function onPhasePreset(key)
+        % Fill this phase's R/G from the preset; the preset's B column goes to the
+        % GLOBAL B (B never varies by phase, so loading a preset sets it everywhere).
         name = h.phPreset.(key).Value;
         k = find(strcmp({presets.name}, name), 1);
         if isempty(k), return; end     % the "(load preset...)" placeholder row
-        h.phGrid.(key).Data = presets(k).values;
-        if h.syncB.Value               % the lock keeps every B column the master's
-            applySyncLock();
+        vals = local_coerce43(presets(k).values);
+        h.phGrid.(key).Data = vals(:, 1:2);
+        h.masterB.Data      = vals(:, 3);
+        syncLinked(key);
+    end
+
+    % -------- LED-table links: "link with" keeps two or more phase grids identical --------
+    function ks = linkMembers(gid)
+        all = {'pre', 'post', 'iti', 'final'};
+        ks  = all(cellfun(@(k) linkGroup.(k) == gid, all));
+    end
+
+    function syncLinked(key)
+        % Mirror `key`'s grid to every table in its link group (no-op when unlinked, and
+        % for the stimulus grid, which is not linkable).
+        if ~isfield(linkGroup, key) || linkGroup.(key) <= 0, return; end
+        d = h.phGrid.(key).Data;
+        for m = linkMembers(linkGroup.(key))
+            if ~strcmp(m{1}, key), h.phGrid.(m{1}).Data = d; end
         end
     end
 
-    function onPhaseScreen(key)
-        % The three R/G/B boxes are the value; the swatch below them just mirrors it.
-        h.phSw.(key).BackgroundColor = phaseScreenRGB(key);
-    end
-
-    function onPhaseSwatch(key)
-        c = uisetcolor(h.phSw.(key).BackgroundColor, 'Phase screen color');
-        if isscalar(c), return; end          % dialog cancelled
-        for ci = 1:3
-            h.phScr.(key)(ci).Value = c(ci);
+    function refreshLinkUI()
+        short = struct('pre', 'pre', 'post', 'post', 'iti', 'inter', 'final', 'end');
+        for kk = {'pre', 'post', 'iti', 'final'}
+            key = kk{1};
+            cb  = h.phLink.(key);
+            g   = linkGroup.(key);
+            if g > 0
+                others = linkMembers(g);
+                others = others(~strcmp(others, key));
+                cb.Text  = ['linked w ' strjoin(cellfun(@(k) short.(k), others, ...
+                                                        'UniformOutput', false), '+')];
+                cb.Value = true;
+            elseif strcmp(linkPick, key)
+                cb.Text  = 'link with';
+                cb.Value = true;
+            else
+                cb.Text  = 'link with';
+                cb.Value = false;
+            end
         end
-        h.phSw.(key).BackgroundColor = c;
     end
 
+    function clearPickUI()
+        for kk = {'pre', 'post', 'iti', 'final'}
+            removeStyle(h.phGrid.(kk{1}));
+        end
+        refreshLinkUI();
+    end
+
+    function onLinkToggle(key)
+        if h.phLink.(key).Value && linkGroup.(key) <= 0
+            % arm: highlight the other tables and wait for a click on one of them
+            if ~isempty(linkPick) && ~strcmp(linkPick, key)   % re-arm from another section
+                h.phLink.(linkPick).Value = false;
+            end
+            linkPick = key;
+            clearPickUI();
+            for kk = {'pre', 'post', 'iti', 'final'}
+                if ~strcmp(kk{1}, key)
+                    addStyle(h.phGrid.(kk{1}), uistyle('BackgroundColor', [0.25 0.42 0.20]));
+                    h.phLink.(kk{1}).Text = 'click me';
+                end
+            end
+            setLedStatus('Link: click one of the highlighted LED tables to link with (untick to cancel).', ...
+                [0.45 0.45 0.45]);
+        elseif ~h.phLink.(key).Value
+            if strcmp(linkPick, key)                          % cancel an armed pick
+                linkPick = '';
+                clearPickUI();
+                setLedStatus('', [0.45 0.45 0.45]);
+            elseif linkGroup.(key) > 0                        % unlink this table
+                g = linkGroup.(key);
+                linkGroup.(key) = 0;
+                rest = linkMembers(g);
+                if numel(rest) < 2                            % a group of one is no group
+                    for r = rest, linkGroup.(r{1}) = 0; end
+                end
+                refreshLinkUI();
+            end
+        else
+            refreshLinkUI();                                  % ticking an already-linked box: restore
+        end
+    end
+
+    function onPhaseTableClick(key)
+        % Complete an armed "link with": clicking a highlighted table links it to the
+        % section that armed the pick; the CLICKED table's values win for the group.
+        if isempty(linkPick) || strcmp(key, linkPick) || ~isfield(linkGroup, key), return; end
+        src = linkPick;
+        linkPick = '';
+        if linkGroup.(key) > 0
+            gid = linkGroup.(key);
+        else
+            gid = max(structfun(@(x) x, linkGroup)) + 1;
+            linkGroup.(key) = gid;
+        end
+        linkGroup.(src) = gid;
+        d = h.phGrid.(key).Data;
+        for m = linkMembers(gid), h.phGrid.(m{1}).Data = d; end
+        clearPickUI();
+        setLedStatus(sprintf('LED tables linked: %s.', strjoin(linkMembers(gid), ' + ')), ...
+            [0.13 0.45 0.20]);
+    end
+
+    function onLedNameDblClick(evt)
+        % Double-click an LED's row name (shown on the pre-stim table) to rename that
+        % LED. The name is saved to rig_config `led_names`, so it survives restarts.
+        try
+            ii = evt.InteractionInformation;
+            if ~ii.RowHeader || isempty(ii.Row), return; end
+            row = ii.Row;
+        catch
+            return;
+        end
+        old = ledNames{row};
+        newName = local_askString(h.fig, 'Rename LED', ...
+            sprintf('Name for this LED row (currently "%s"):', old), old);
+        if isempty(newName) || strcmp(newName, old), return; end
+        ledNames{row} = newName;
+        h.phGrid.pre.RowName = ledNames;
+        try
+            setRigConfig('led_names', ledNames);
+        catch err
+            setLedStatus(['LED name not saved to rig_config: ' err.message], [0.85 0.45 0.10]);
+            return;
+        end
+        setLedStatus(sprintf('LED row %d renamed to "%s" (saved to rig_config).', row, newName), ...
+            [0.13 0.45 0.20]);
+    end
+
+    % -------- the RGBval column (a one-column table: R, G, B rows + a swatch cell) --------
     function v = phaseScreenRGB(key)
-        v = min(max([h.phScr.(key)(1).Value, h.phScr.(key)(2).Value, h.phScr.(key)(3).Value], 0), 1);
-    end
-
-    function onCopyPhase(dst, src)
-        % Pull src's LED grid + screen color into dst (durations are NOT copied -- they
-        % define the protocol's timing, not its light).
-        h.phGrid.(dst).Data = h.phGrid.(src).Data;
+        d = h.phScrTbl.(key).Data;
+        v = [0 0 0];
         for ci = 1:3
-            h.phScr.(dst)(ci).Value = h.phScr.(src)(ci).Value;
+            x = d{ci};
+            if isnumeric(x) && isscalar(x) && isfinite(x), v(ci) = x; end
         end
-        h.phSw.(dst).BackgroundColor = phaseScreenRGB(dst);
-        if h.syncB.Value, applySyncLock(); end
+        v = min(max(double(v), 0), 1);
     end
 
-    function onSyncB()
-        applySyncLock();
+    function setPhaseScreenRGB(key, v)
+        v = min(max(double(reshape(v, 1, [])), 0), 1);
+        d = h.phScrTbl.(key).Data;
+        for ci = 1:3
+            d{ci} = v(ci);
+        end
+        d{4} = '';
+        h.phScrTbl.(key).Data = d;
+        updateSwatch(key);
+    end
+
+    function updateSwatch(key)
+        % The bottom cell IS the swatch: its background is painted the actual color, so
+        % it is theme-independent by construction.
+        t = h.phScrTbl.(key);
+        removeStyle(t);
+        addStyle(t, uistyle('BackgroundColor', phaseScreenRGB(key)), 'cell', [4 1]);
+    end
+
+    function onScreenCellEdit(key, evt)
+        if isempty(evt.Indices), return; end
+        r = evt.Indices(1);
+        d = h.phScrTbl.(key).Data;
+        if r == 4                              % the swatch cell holds no text
+            d{4} = '';
+            h.phScrTbl.(key).Data = d;
+            return;
+        end
+        v = str2double(string(evt.NewData));
+        if isnumeric(evt.NewData) && isscalar(evt.NewData), v = double(evt.NewData); end
+        if ~isscalar(v) || ~isfinite(v), v = 0; end
+        d{r} = min(max(v, 0), 1);
+        h.phScrTbl.(key).Data = d;
+        updateSwatch(key);
+    end
+
+    function onScreenClick(key, evt)
+        % A click on the bottom (swatch) cell opens the color picker.
+        try
+            if evt.InteractionInformation.Row ~= 4, return; end
+        catch
+            return;
+        end
+        c = uisetcolor(phaseScreenRGB(key), 'Phase screen color');
+        if isscalar(c), return; end            % dialog cancelled
+        setPhaseScreenRGB(key, c);
     end
 
     function onMasterBEdit(evt)
+        % The global B column: clamp the value; every phase reads it live (phaseGrid43).
         d = h.masterB.Data;
         if ~isempty(evt.Indices)
             v = double(evt.NewData);
             if ~isscalar(v) || ~isfinite(v), v = 0; end
             d(evt.Indices(1)) = min(max(v, 0), 1);
             h.masterB.Data = d;
-        end
-        if h.syncB.Value, applySyncLock(); end
-    end
-
-    function applySyncLock()
-        % "sync and lock B channels": the master column drives every grid's B channel and
-        % the individual B columns become read-only (grayed via a column style). Off: each
-        % grid keeps whatever the master last wrote, and its B column is editable again.
-        locked = logical(h.syncB.Value);
-        onOff  = {'off', 'on'};
-        h.masterB.Enable = onOff{1 + locked};
-        for kk = {'pre', 'stim', 'post', 'iti', 'final'}
-            key = kk{1};
-            t = h.phGrid.(key);
-            removeStyle(t);
-            if locked
-                d = t.Data;
-                d(:, 3) = h.masterB.Data(:);
-                t.Data = d;
-                t.ColumnEditable = [true true false];
-                addStyle(t, uistyle('BackgroundColor', [0.90 0.90 0.90], ...
-                                    'FontColor', [0.55 0.55 0.55]), 'column', 3);
-            else
-                t.ColumnEditable = [true true true];
-            end
         end
     end
 
@@ -711,18 +796,21 @@ function stimulusGUI(mode)
         % plus the B-lock state. This is exactly what is saved into experiments/state --
         % no symbolic preset references, so a saved experiment always reproduces the
         % light it was saved with, even if rig_config presets change later.
+        % Grids are stored as full 4x3 (R,G from each phase table + the GLOBAL B column),
+        % so saved experiments, resolution and the run pipeline are format-unchanged.
         ps = struct('version', 2);
         ps.pre   = struct('seconds', h.preStim.Value,  'rgb', phaseScreenRGB('pre'), ...
-                          'grid', local_coerce43(h.phGrid.pre.Data));
-        ps.stim  = struct('grid', local_coerce43(h.phGrid.stim.Data));
+                          'grid', phaseGrid43('pre'));
+        ps.stim  = struct('grid', phaseGrid43('stim'));
         ps.post  = struct('seconds', h.postStim.Value, 'rgb', phaseScreenRGB('post'), ...
-                          'grid', local_coerce43(h.phGrid.post.Data));
+                          'grid', phaseGrid43('post'));
         ps.iti   = struct('seconds', h.itp.Value,      'rgb', phaseScreenRGB('iti'), ...
-                          'grid', local_coerce43(h.phGrid.iti.Data));
+                          'grid', phaseGrid43('iti'));
         ps.final = struct('rgb', phaseScreenRGB('final'), ...
-                          'grid', local_coerce43(h.phGrid.final.Data));
-        ps.syncB   = logical(h.syncB.Value);
+                          'grid', phaseGrid43('final'));
+        ps.syncB   = true;                     % B is always global now
         ps.masterB = double(h.masterB.Data(:)');
+        ps.links   = linkGroup;                % LED-table link groups (0 = unlinked)
     end
 
     function applyPhasesToUI(spec)
@@ -733,24 +821,28 @@ function stimulusGUI(mode)
         % The stimulus grid's default is what applyLedsToUI just loaded (opts.leds), NOT
         % zeros -- otherwise a pre-band experiment file would wipe its LED grid on load,
         % and a v1 spec's "(main grid)" phases would convert to darkness.
-        def.stim.grid = local_coerce43(h.phGrid.stim.Data);
+        def.stim.grid = phaseGrid43('stim');
+        def.masterB   = double(h.masterB.Data(:)');
         spec = local_normalizePhaseSpec(spec, presets, def);
         h.preStim.Value  = spec.pre.seconds;
         h.postStim.Value = spec.post.seconds;
         h.itp.Value      = spec.iti.seconds;
-        h.phGrid.stim.Data = spec.stim.grid;
+        % B is GLOBAL now: specs saved with the old per-phase lock OFF carry a B column
+        % per grid -- the stimulus phase's B (the one that mattered during epochs) wins.
+        if isfield(spec, 'syncB') && logical(spec.syncB(1))
+            h.masterB.Data = spec.masterB(:);
+        else
+            h.masterB.Data = spec.stim.grid(:, 3);
+        end
+        h.phGrid.stim.Data = spec.stim.grid(:, 1:2);
         for kk = {'pre', 'post', 'iti', 'final'}
             key = kk{1};
-            h.phGrid.(key).Data = spec.(key).grid;
-            v = spec.(key).rgb;
-            for ci = 1:3
-                h.phScr.(key)(ci).Value = v(ci);
-            end
-            h.phSw.(key).BackgroundColor = v;
+            h.phGrid.(key).Data = spec.(key).grid(:, 1:2);
+            setPhaseScreenRGB(key, spec.(key).rgb);
         end
-        h.masterB.Data = spec.masterB(:);
-        h.syncB.Value  = logical(spec.syncB);
-        applySyncLock();
+        linkPick  = '';
+        linkGroup = spec.links;
+        clearPickUI();     % restores link labels/ticks and drops any pick highlight
     end
 
     % ================= Quick load: 10 assignable experiment slots =================
@@ -902,46 +994,6 @@ function stimulusGUI(mode)
             return;
         end
         refreshProtocol(rows);
-    end
-
-    function onUpdateEpochs()
-        % Edit epochs that are ALREADY in the table instead of appending more: rewrite their
-        % parameters, label and epoch count from the top window.
-        if isempty(blocks)
-            uialert(h.fig, 'There are no epochs to update yet -- use "Add block" first.', ...
-                'Nothing to update');
-            return;
-        end
-        if ~strcmp(blocks(1).fnName, curEntry.fn)
-            uialert(h.fig, sprintf(['The parameter panel is showing "%s", but this protocol is ' ...
-                '"%s". Click an epoch to load it back up, or use "Clear all" to start over with ' ...
-                'a different stimulus.'], curEntry.name, blocks(1).stimName), 'Different stimulus');
-            return;
-        end
-        sel = h.protoTable.Selection;
-        if ~isempty(sel)
-            target = local_blockOfEpoch(blocks, sel(1));
-        elseif isscalar(blocks)
-            target = 1;
-        else
-            choice = uiconfirm(h.fig, sprintf(['Nothing is selected in the epoch table, and this ' ...
-                'protocol has %d blocks.\n\nApply these parameters, this label and %d epoch(s) ' ...
-                'to ALL of them?'], numel(blocks), round(h.epochs.Value)), 'Update which epochs?', ...
-                'Options', {'Cancel', 'Update all'}, 'DefaultOption', 1, 'CancelOption', 1);
-            if ~strcmp(choice, 'Update all'), return; end
-            target = 1:numel(blocks);
-        end
-        if isempty(target) || any(target == 0), return; end
-        try
-            ps     = local_paramsFromRows(curEntry, h.paramTable.Data);
-            blocks = local_updateBlocks(blocks, target, ps, char(h.label.Value), h.epochs.Value);
-        catch err
-            uialert(h.fig, err.message, 'Invalid parameter');
-            return;
-        end
-        keep = [];
-        if ~isempty(sel), keep = sel(1); end
-        refreshProtocol(keep);
     end
 
     function onRemoveEpoch()
@@ -1294,7 +1346,7 @@ function stimulusGUI(mode)
         leds = struct('enabled', logical(h.ledEnable.Value), ...
                       'port', char(h.ledPort.Value), ...
                       'mode', double(h.ledMode.Value), ...
-                      'intensity', local_coerce43(h.ledGrid.Data));   % runExperiment applies this grid
+                      'intensity', phaseGrid43('stim'));   % runExperiment applies this grid
     end
 
     function applyLedsToUI(L)
@@ -1307,9 +1359,12 @@ function stimulusGUI(mode)
         h.ledPort.Value = p;
         m = double(getfielddef(L, 'mode', 2));
         if ismember(m, [0 1 2 3]), h.ledMode.Value = m; end
-        % single grid: prefer `intensity`; fall back to a legacy During grid, else zeros
-        grid = getfielddef(L, 'intensity', getfielddef(L, 'during_epochs', zeros(4, 3)));
-        h.ledGrid.Data = local_coerce43(grid);
+        % single grid: prefer `intensity`; fall back to a legacy During grid, else zeros.
+        % R/G land on the stimulus table, the B column on the global B (applyPhasesToUI,
+        % which runs after this on load, may override both from the saved band spec).
+        grid = local_coerce43(getfielddef(L, 'intensity', getfielddef(L, 'during_epochs', zeros(4, 3))));
+        h.phGrid.stim.Data = grid(:, 1:2);
+        h.masterB.Data     = grid(:, 3);
     end
 
     % ----- LED quick-set: drive the rig NOW, between OpenGL runs (no experiment) -----
@@ -1362,7 +1417,7 @@ function stimulusGUI(mode)
     function onLedSetNow()
         try
             r    = quickRig();
-            vals = local_coerce43(h.ledGrid.Data);
+            vals = phaseGrid43('stim');
             ok   = r.setMode(0);               % dark while the registers load (as runExperiment)
             cols = {'r', 'g', 'b'};
             for li = 1:4
@@ -1551,75 +1606,50 @@ function items = local_presetNames(presets)
     items = [{'(load preset...)'}, names];
 end
 
-
-% ---------- startup-state probes (bounded; GUI launch must never hang) ----------
-
-function tf = local_portOpen(host, port, timeoutMs)
-% Is anything listening? A raw java TCP connect with a HARD timeout -- unlike
-% netbox.Connection, whose connect can take ~10 s against an unreachable host, this
-% answers within timeoutMs even off the rig network.
-    tf = false;
-    try
-        s = java.net.Socket();
-        s.connect(java.net.InetSocketAddress(host, port), timeoutMs);
-        s.close();
-        tf = true;
-    catch
-    end
+function n = local_ledNames()
+% User-editable LED row names from rig_config `led_names` (double-click a row name on
+% the pre-stim table to rename). Always a 1x4 cellstr; anything missing -> 'LED i'.
+    n = local_coerceLedNames(loadRigConfig('led_names', []));
 end
 
-function [tf, cv] = local_stageAnswers(host, port, budgetS)
-% Bounded liveness probe (a small, cancel-free version of runExperiment's pre-flight):
-% connect, ask for the canvas size, poll the reply in slices. A server that accepts but
-% never answers (still starting, wedged, another client attached) fails within budgetS
-% instead of hanging the GUI in netbox's unbounded read. Disconnects either way, so the
-% single-client server is left free. cv = the canvas size from the reply ([] if unknown).
-    tf   = false;
-    cv   = [];
-    conn = [];
-    try
-        conn = netbox.Connection(host, port);
-        conn.setReceiveTimeout(150);
-        conn.sendEvent(netbox.NetEvent('getCanvasSize'));
-        t0 = tic;
-        while toc(t0) < budgetS
-            try
-                msg = conn.receiveMessage();
-                tf  = true;
-                try
-                    if strcmp(char(msg.name), 'ok') && ~isempty(msg.arguments)
-                        cv = double(msg.arguments{1});
-                        cv = cv(:)';
-                    end
-                catch
-                end
-                break;
-            catch e
-                if ~strcmp(e.identifier, 'Connection:ReceiveTimeout'), break; end
-                pause(0.03);
-            end
-        end
-    catch
-    end
-    if ~isempty(conn)
+function n = local_coerceLedNames(raw)
+    n = {'LED 0', 'LED 1', 'LED 2', 'LED 3'};
+    if isstring(raw), raw = cellstr(raw); end
+    if ~iscell(raw), return; end
+    for i = 1:min(4, numel(raw))
         try
-            conn.disconnect();
+            v = strtrim(char(string(raw{i})));
         catch
+            v = '';
         end
+        if ~isempty(v) && (ischar(raw{i}) || isstring(raw{i})), n{i} = v; end
     end
 end
 
-function v = local_coerceRGB(x)
-% rig_config startup_screen_rgb (possibly a jsondecode column, possibly junk) -> [r g b].
-    v = [0 0 0];
-    if isnumeric(x)
-        x = double(x(:)');
-        if numel(x) == 3 && all(isfinite(x)), v = min(max(x, 0), 1); end
+function out = local_askString(parentFig, ttl, prompt, current)
+% Small modal text prompt (uifigure-native; inputdlg mixes figure types). Returns the
+% trimmed string, or '' on cancel/empty.
+    out = '';
+    pp = parentFig.Position;
+    d  = uifigure('Name', ttl, 'Resize', 'off', ...
+                  'Position', [pp(1) + 500, pp(2) + 450, 360, 130]);
+    g  = uigridlayout(d, [3 2]);
+    g.RowHeight   = {'fit', 'fit', 'fit'};
+    g.ColumnWidth = {'1x', '1x'};
+    lb = uilabel(g, 'Text', prompt, 'WordWrap', 'on');
+    lb.Layout.Column = [1 2];
+    ef = uieditfield(g, 'text', 'Value', current);
+    ef.Layout.Column = [1 2];
+    uibutton(g, 'Text', 'OK', 'ButtonPushedFcn', @(s, e) done(true));
+    uibutton(g, 'Text', 'Cancel', 'ButtonPushedFcn', @(s, e) done(false));
+    d.CloseRequestFcn = @(s, e) done(false);
+    uiwait(d);
+    function done(ok)
+        if ok, out = strtrim(char(ef.Value)); end
+        delete(d);
     end
 end
 
-
-% ---------- screens-&-LEDs band: the phase spec (v2 -- explicit grids + colors) ----------
 
 function d = local_defaultPhaseSpec(preS, postS, itiS)
 % The spec that reproduces the pre-overhaul behavior: black screens, every phase grid
@@ -1632,6 +1662,7 @@ function d = local_defaultPhaseSpec(preS, postS, itiS)
         'final', struct('rgb', [0 0 0], 'grid', zeros(4, 3)));
     d.syncB   = false;
     d.masterB = zeros(1, 4);
+    d.links   = struct('pre', 0, 'post', 0, 'iti', 0, 'final', 0);   % LED-table link groups
 end
 
 function spec = local_normalizePhaseSpec(spec, presets, def)
@@ -1671,6 +1702,20 @@ function spec = local_normalizePhaseSpec(spec, presets, def)
     if isfield(spec, 'masterB')
         m = double(reshape(spec.masterB, 1, []));
         if numel(m) == 4 && all(isfinite(m)), out.masterB = min(max(m, 0), 1); end
+    end
+    if isfield(spec, 'links') && isstruct(spec.links)
+        for kk = {'pre', 'post', 'iti', 'final'}
+            if isfield(spec.links, kk{1})
+                v = double(spec.links.(kk{1}));
+                if isscalar(v) && isfinite(v) && v >= 0, out.links.(kk{1}) = round(v); end
+            end
+        end
+        % a "group" with a single member is no link at all
+        ids = structfun(@(x) x, out.links);
+        for kk = {'pre', 'post', 'iti', 'final'}
+            g = out.links.(kk{1});
+            if g > 0 && sum(ids == g) < 2, out.links.(kk{1}) = 0; end
+        end
     end
     spec = out;
 end
@@ -1908,8 +1953,11 @@ function [cols, widths, editable, keys] = local_epochTableSpec(reg, blocks)
     if ~isempty(blocks) && ~local_mixedStims(blocks)
         e   = local_findEntry(reg, blocks(1).fnName);
         idx = local_editableParams(e);
+        % Weighted widths so the columns EXPAND to fill the table's full width -- no
+        % dead space right of the last column. uitable weights must be INTEGER 'Nx'
+        % ('1.4x' is rejected, unlike uigridlayout).
         cols     = {'Epoch #', 'Label'};
-        widths   = {52, 96};
+        widths   = {64, '2x'};
         keys     = {'epoch', 'label'};
         editable = [false, true];
         if local_seedArgFor(e) > 0
@@ -1921,14 +1969,14 @@ function [cols, widths, editable, keys] = local_epochTableSpec(reg, blocks)
             keys{end+1} = ['p:' e.params{k, 1}];                        %#ok<AGROW>
             editable(end+1) = true;                                     %#ok<AGROW>
             switch e.params{k, 3}
-                case 'vec2', widths{end+1} = 76;                        %#ok<AGROW>
-                case 'enum', widths{end+1} = 118;                       %#ok<AGROW>
-                otherwise,   widths{end+1} = 68;                        %#ok<AGROW>
+                case 'vec2', widths{end+1} = '1x';                      %#ok<AGROW>
+                case 'enum', widths{end+1} = '2x';                      %#ok<AGROW>
+                otherwise,   widths{end+1} = '1x';                      %#ok<AGROW>
             end
         end
     else
         cols     = {'Epoch #', 'Stimulus', 'Label', 'Params'};
-        widths   = {52, 220, 110, '1x'};
+        widths   = {64, 220, 110, '1x'};
         keys     = {'epoch', 'readonly', 'readonly', 'readonly'};
         editable = [false, false, false, false];
     end
@@ -2134,27 +2182,6 @@ function plan = local_previewPlan(reg, blocks, opts, cellName)
                                     'itp',      getfielddef(opts, 'itp', 3)), ...
                   'leds', getfielddef(opts, 'leds', struct('enabled', false)));
     plan.blocks = pb;
-end
-
-function blocks = local_updateBlocks(blocks, target, ps, label, epochs)
-% Rewrite the parameters, label and epoch count of the given block indices in place. Used
-% by "Update epochs": the epochs already in the table change, none are appended. Existing
-% per-epoch seeds are KEPT; shrinking trims from the end, growing appends fresh seeds.
-    for i = reshape(target, 1, [])
-        blocks(i).params = ps;
-        blocks(i).label  = char(label);
-        n = max(1, round(epochs));
-        s = blocks(i).seeds;
-        if ~isempty(s)
-            if n < numel(s)
-                s = s(1:n);
-            elseif n > numel(s)
-                s = [s, local_nextSeeds(blocks, n - numel(s))];         %#ok<AGROW>
-            end
-        end
-        blocks(i).seeds  = s;
-        blocks(i).epochs = n;
-    end
 end
 
 function secs = local_blockSeconds(entry, ps)
@@ -2512,23 +2539,15 @@ function selftest()
            contains(local_protoSummary(blocks), 'once, at the end'), ...
         'the table summary counts epochs + parameter blocks, and says Keep/Discard is asked once');
 
-    % ---- "Update epochs": edit rows already in the table instead of appending more ----
-    ps2 = ps; ps2.sigma = 0.9; ps2.stimFrames = 300;
-    b5  = local_updateBlocks(blocks, 1, ps2, 'retuned', 4);
-    assert(numel(b5) == 2, 'updating adds no blocks');
-    assert(b5(1).params.sigma == 0.9 && b5(1).params.stimFrames == 300 && ...
-           strcmp(b5(1).label, 'retuned') && b5(1).epochs == 4, 'the targeted block took the new values');
-    assert(isequal(b5(1).seeds, [2 3 4 5]), 'shrinking a block trims seeds from the end');
-    assert(b5(2).epochs == 3 && ~isfield(b5(2).params, 'sigma'), 'other blocks are untouched');
-    assert(size(local_epochRows(reg, b5), 1) == 7, '5 epochs -> 4 shrinks the table to 7 rows');
-    b6 = local_updateBlocks(blocks, 1:2, ps2, 'all', 2);
-    assert(all([b6.epochs] == 2) && all(strcmp({b6.label}, 'all')), '"Update all" reaches every block');
-    b7 = local_updateBlocks(blocks, 1, ps2, 'grown', 7);
-    assert(isequal(b7(1).seeds, [2 3 4 5 6 7 8]), 'growing a block appends fresh seeds');
-    b7 = local_updateBlocks(blocks, 1, ps2, 'zero', 0);
-    assert(b7(1).epochs == 1 && isequal(b7(1).seeds, 2), 'a block can never be updated down to zero epochs');
-    fprintf('[selftest] Update epochs rewrites existing rows (params / label / count) in place\n');
     fprintf('[selftest] protocol table = one row per epoch; one stimulus type per protocol\n');
+
+    % ---- LED row names: defaults, coercion, round-trip shape ----
+    nm = local_coerceLedNames([]);
+    assert(isequal(nm, {'LED 0', 'LED 1', 'LED 2', 'LED 3'}), 'missing led_names -> defaults');
+    nm = local_coerceLedNames({'545nm'; ''; 42; 'IR'});      % jsondecode column + junk
+    assert(isequal(nm, {'545nm', 'LED 1', 'LED 2', 'IR'}), ...
+        'led_names coercion: keeps real names, defaults empties/junk, row shape');
+    fprintf('[selftest] LED row names coerce + default correctly\n');
 
     pr = local_loadPresets();                       % presets read from rig_config.json
     assert(numel(pr) >= 2 && any(strcmp({pr.name}, 'Off')) && any(strcmp({pr.name}, 'macaque s-iso')), ...

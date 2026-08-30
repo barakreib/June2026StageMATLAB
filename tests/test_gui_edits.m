@@ -1,6 +1,6 @@
 function test_gui_edits()
-% (3) table buttons disabled with an empty protocol, (4) per-epoch "Update selected",
-% (1) the monitor timeline previewing the protocol as it is built.
+% (3) table buttons disabled with an empty protocol, (4) per-epoch "Apply params to
+% selected", (1) the monitor timeline previewing the protocol as it is built.
     stateGuard = guiStateGuard(); %#ok<NASGU>
     stimulusGUI();
     fig = findall(0, 'Type', 'figure', 'Name', 'Neitz Stimulus GUI');
@@ -10,17 +10,17 @@ function test_gui_edits()
     pTbl  = local_tbl(tbls, 'Parameter');
     proto = local_tbl(tbls, 'Epoch #');
 
-    upd    = btn('Update epochs  v');
-    updSel = btn('Update selected');
+    updSel = btn('Apply params to selected');
     rm     = btn('Remove epoch');
     clr    = btn('Clear all');
     add    = btn('Add block  v');
-    assert(~isempty(updSel), 'the new "Update selected" button exists');
+    assert(~isempty(updSel), 'the "Apply params to selected" button exists');
+    assert(isempty(btn('Update epochs  v')), '"Update epochs" is gone');
     assert(isequal(updSel.Parent, rm.Parent), 'it sits with the other selection actions');
 
     % ---- (3) nothing in the table -> nothing to update / remove / clear ----
     assert(isempty(proto.Data), 'starts empty');
-    for b = [upd, updSel, rm, clr]
+    for b = [updSel, rm, clr]
         assert(strcmp(b.Enable, 'off'), sprintf('"%s" is disabled with an empty protocol', b.Text));
     end
 
@@ -32,7 +32,7 @@ function test_gui_edits()
     epochsFld.Value = 4;
     add.ButtonPushedFcn(add, []);
     assert(size(proto.Data, 1) == 4, '4 epochs added');
-    for b = [upd, updSel, rm, clr]
+    for b = [updSel, rm, clr]
         assert(strcmp(b.Enable, 'on'), sprintf('"%s" is live once there are epochs', b.Text));
     end
 
@@ -109,32 +109,63 @@ function test_gui_edits()
     assert(strcmp(d2{4, seedCol}, '99') && strcmp(d2{3, seedCol}, '4'), ...
         'a seed edit changes only its epoch''s seed');
 
-    % ---- screens & LEDs band: preset fill, copy across phases, B-channel lock ----
+    % ---- screens & LEDs band: R/G tables + the GLOBAL B column (no per-phase B) ----
     preGrid  = findall(fig, 'Tag', 'phGrid_pre');
     stimGrid = findall(fig, 'Tag', 'phGrid_stim');
     postGrid = findall(fig, 'Tag', 'phGrid_post');
-    assert(~isempty(preGrid) && ~isempty(stimGrid) && ~isempty(postGrid), 'phase grids exist');
+    mB       = findall(fig, 'Tag', 'masterB');
+    assert(~isempty(preGrid) && ~isempty(stimGrid) && ~isempty(postGrid) && ~isempty(mB), ...
+        'phase grids + the global B column exist');
+    assert(size(preGrid.Data, 2) == 2 && size(mB.Data, 2) == 1, ...
+        'phase tables carry R/G only; B lives in the single far-right column');
+    assert(numel(preGrid.RowName) == 4 && isempty(stimGrid.RowName) && isempty(postGrid.RowName), ...
+        'LED row names appear once, on the pre-stim table');
+    assert(isempty(findall(fig, 'Type', 'uicheckbox', 'Text', 'sync and lock B channels')), ...
+        'the B-lock checkbox is gone -- B is always global');
     pp = findall(fig, 'Tag', 'phPreset_pre');
     pp.Value = 'macaque s-iso';
     pp.ValueChangedFcn(pp, []);
-    assert(abs(preGrid.Data(2, 3) - 1) < 1e-9, 'a preset fills its own phase grid (LED1 B=1)');
-    assert(~any(stimGrid.Data(:)), 'and only that grid');
-    cb = findall(fig, 'Tag', 'copy_post_from_pre');
-    cb.ButtonPushedFcn(cb, []);
-    assert(isequal(postGrid.Data, preGrid.Data), '"copy pre-stim" pulls the grid into post-stimulus');
-    sync = findall(fig, 'Type', 'uicheckbox', 'Text', 'sync and lock B channels');
-    mB   = findall(fig, 'Tag', 'masterB');
-    mB.Data = [0.25; 0; 0; 0];
-    sync.Value = true;
-    sync.ValueChangedFcn(sync, []);
-    assert(abs(preGrid.Data(1, 3) - 0.25) < 1e-9 && abs(stimGrid.Data(1, 3) - 0.25) < 1e-9 && ...
-           abs(preGrid.Data(2, 3)) < 1e-9, 'lock: the master B column drives EVERY grid''s B');
-    assert(isequal(preGrid.ColumnEditable, [true true false]) && strcmp(mB.Enable, 'on'), ...
-        'lock: individual B columns are read-only, the master is live');
-    sync.Value = false;
-    sync.ValueChangedFcn(sync, []);
-    assert(isequal(preGrid.ColumnEditable, [true true true]) && strcmp(mB.Enable, 'off'), ...
-        'unlock restores the individual B columns');
+    assert(abs(preGrid.Data(4, 1) - 1) < 1e-9, 'a preset fills its own phase R/G (LED3 R=1)');
+    assert(abs(mB.Data(2) - 1) < 1e-9, 'the preset''s B column lands on the global B (LED1 B=1)');
+    assert(~any(stimGrid.Data(:)), 'and only that phase''s R/G');
+    evt = struct('Indices', [1 1], 'NewData', 1.7);
+    mB.CellEditCallback(mB, evt);
+    assert(abs(mB.Data(1) - 1) < 1e-9, 'the global B clamps to [0,1]');
+    evt = struct('Indices', [1 1], 'NewData', 0.7);
+    preGrid.CellEditCallback(preGrid, evt);
+    assert(abs(preGrid.Data(1, 1) - 0.7) < 1e-9, 'R/G cells edit + clamp normally');
+
+    % ---- "link with": arm on pre, click post -> the two grids stay identical ----
+    lkPre  = findall(fig, 'Tag', 'phLink_pre');
+    lkPost = findall(fig, 'Tag', 'phLink_post');
+    lkPre.Value = true;
+    lkPre.ValueChangedFcn(lkPre, []);
+    assert(strcmp(lkPost.Text, 'click me'), 'arming a link invites a click on the other tables');
+    postGrid.ClickedFcn(postGrid, []);                     % click the post table = link to it
+    assert(strcmp(lkPre.Text, 'linked w post') && strcmp(lkPost.Text, 'linked w pre'), ...
+        'both sections show who they are linked with');
+    assert(isequal(preGrid.Data, postGrid.Data), 'linking adopts the CLICKED table''s values');
+    evt = struct('Indices', [2 2], 'NewData', 0.33);
+    preGrid.CellEditCallback(preGrid, evt);
+    assert(abs(postGrid.Data(2, 2) - 0.33) < 1e-9, 'editing one linked table updates the other');
+    lkPre.Value = false;
+    lkPre.ValueChangedFcn(lkPre, []);
+    assert(strcmp(lkPre.Text, 'link with') && strcmp(lkPost.Text, 'link with') && ~lkPost.Value, ...
+        'unlinking one member dissolves a two-table group');
+    evt = struct('Indices', [2 2], 'NewData', 0.9);
+    preGrid.CellEditCallback(preGrid, evt);
+    assert(abs(postGrid.Data(2, 2) - 0.33) < 1e-9, 'after unlinking, edits stay local');
+
+    % ---- RGBval column: numeric rows clamp, the swatch row stays empty ----
+    scr = findall(fig, 'Tag', 'phScr_pre');
+    assert(~isempty(scr) && strcmp(scr.ColumnName{1}, 'RGBval'), 'RGBval column is a one-column table');
+    evt = struct('Indices', [1 1], 'NewData', 0.5);
+    scr.CellEditCallback(scr, evt);
+    evt = struct('Indices', [2 1], 'NewData', 7);
+    scr.CellEditCallback(scr, evt);
+    assert(abs(scr.Data{1} - 0.5) < 1e-9 && abs(scr.Data{2} - 1) < 1e-9, ...
+        'screen R/G/B rows take values and clamp to [0,1]');
+    assert(isempty(scr.Data{4}) || strcmp(scr.Data{4}, ''), 'the swatch cell carries no text');
 
     fprintf('[gui edits] buttons gated, per-epoch update, cell edits, band, live preview -- PASS\n');
 end
