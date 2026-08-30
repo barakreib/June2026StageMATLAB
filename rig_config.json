@@ -3,7 +3,17 @@
   "projector": "TI LightCrafter 4500",
   "projector_mode": "Video",
   "refresh_rate_hz": 60,
+  "canvas_size": [
+    912,
+    1140
+  ],
+  "pixel_aspect": 2.0,
   "stage_host": "192.168.0.51",
+  "startup_screen_rgb": [
+    0,
+    0,
+    0
+  ],
   "led_port": "COM3",
   "debug_values_csv": false,
   "gamma": 1.9949,
@@ -29,6 +39,32 @@
           0,
           0,
           0
+        ],
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    {
+      "name": "startup",
+      "note": "GUI-launch background: all R/G channels 0, B duty 0.25 on the green ~545 nm LED. Row = LED 1, inferred from the \"565nm on R/G\" presets which drive that row -- fix the row (and confirm 545 vs 565 nm) if the wiring says otherwise.",
+      "values": [
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0.25
         ],
         [
           0,

@@ -9,3 +9,6 @@
 # machine-local Claude config — never commit
 .claude/
 timing_tests/
+
+# per-run generated stimulus scripts (written next to the day's data at Run time)
+generated_stimuli/

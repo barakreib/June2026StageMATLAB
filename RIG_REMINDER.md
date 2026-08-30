@@ -139,6 +139,65 @@ See `ml-uled/README.md`. Standalone from the OpenGL scripts.
    want light linear at the eye). Leave **Enable off** (and "Trigger Clampex acq" off) for a
    local dry run with no FPGA. Per-session config for now — one LED setup per experiment.
 
+## §10 — Generated stimulus scripts + single-window GUI (2026-08-29 overhaul)   ☐
+**Layout since the rework:** ONE window — protocol builder (middle), Session monitor
+embedded (right, no separate window, no second Cancel), and the **Screens & LEDs band**
+along the bottom: five sections (pre-stim | stimulus | post-stimulus | inter-stim | end
+of stim), each with a preset dropdown + its own 4×3 LED grid, and (except "stimulus") a
+screen column (R/G/B boxes + color picker). "copy <phase>" buttons pull grids/screens
+across; "sync and lock B channels" makes the far-right master B column drive every grid's
+B channel. **Seeds are per epoch**: the protocol table has one editable column per
+parameter plus Label and seed; every Gaussian epoch gets its own auto-assigned seed
+(recorded in the manifest, and in the values CSV's new `seed` column when the debug dump
+is on). `seedBase` is gone from the GUI.
+
+Run no longer calls the `AA*` files: it writes ONE generated m-file per run into
+`<data dir>/generated_stimuli/` (the exact record of what ran) and executes that. The
+stimulus segment is frame-exact with the AA scripts (proven off-rig, all 7); what needs
+the rig is the *physical* phase behavior:
+1. ☐ Local dry run (§0 setup): set **Pre-stim** RGB to `0.5 0.5 0.5` and run 2 epochs.
+   Expect: grey full screen for preStim seconds (sync bar dark) → stimulus → post-stim
+   screen → the **Inter-stim** screen HOLDS between epochs → the **Run end** screen holds
+   after the last one. No flashes between phases.
+2. ☐ Frame clock on the photodiode: the first blue sync-bar flash still lands on the FIRST
+   stimulus frame (pre-stim renders with the bar dark), so analysis alignment is unchanged.
+3. ☐ Only ONE Stage connection per run (the scripts share a client now): watch the server
+   console — one "Client connected" per Run, one disconnect at the end, and the server is
+   free for standalone scripts afterwards.
+4. ☐ Per-phase LEDs (FPGA wired): give Pre-stim a preset, leave the rest "(main grid)".
+   Expect the grid to switch at the phase boundaries (~50 ms granularity, serial).
+5. ☐ **Run end** LEDs: "Off" darks + closes as before; any grid/preset stays ON after the
+   run and the driver lives on as base-workspace `rig` (`clear rig` to darken + close).
+6. ☐ Quick load: Assign slot 1 to the current protocol, restart the GUI, click slot 1 →
+   the whole experiment (protocol + phases + LEDs) comes back.
+7. ☐ Open the day's `generated_stimuli/genStim_*.m` and confirm it reads as the record of
+   the run; its name is stamped in the manifest (`params.generated_script`).
+8. ☐ **Three-segment sync bar** (rightmost W/8, never covered by any full-screen value):
+   photodiode/scope on each segment — **top** toggles every frame through pre/stim/post
+   (a refresh/2 Hz square wave: ~30 Hz at 60 fps — measures the true LightCrafter rate);
+   **middle** = the legacy stimulus-update pattern, dark outside the stimulus; **bottom**
+   = solid while stimulus frames are up (envelope). On held screens (inter-stim / run end
+   / startup) the top segment is SOLID blue ("projector alive, frame held" — DC on the
+   photodiode) and middle/bottom are dark — a held frame is static, nothing flips.
+9. ☐ **Diamond-pixel geometry (SQUARE checks)**: the DLP4500's 912×1140 diamond array
+   lands each canvas pixel `pixel_aspect`× wider than tall (2.0 from the diamond
+   geometry → a 16:10 image, per TI's WXGA spec — n.b. not quite the 16:9 we said).
+   Generated checkerboards now DERIVE checksY for square-on-the-wall checks (40×25 at
+   pixel_aspect 2; the old fixed 40×32 drew them ~1.3× wide, as in the 2026-08-29 photo),
+   and the jitter circle gets radiusY = radius × pixel_aspect. **Verify**: run a
+   checkerboard, photograph/measure a check — if still not square, tune rig_config
+   `pixel_aspect` (2.222 would correspond to a true 16:9 image). The pre-flight prints
+   the server's canvas and WARNS if it differs from rig_config `canvas_size` [912 1140];
+   the manifest now records canvas_w/canvas_h/pixel_aspect per block. (AA* standalone
+   scripts are untouched and still draw the old stretched 40×32.)
+10. ☐ **Startup state**: launch `stimulusGUI` with the Stage server running → the screen
+   goes dark (full field black, bar dark) and the LEDs load the **"startup"** preset
+   (R/G dark, B duty 0.25 on the 545 nm LED). **CHECK THE ROW**: rig_config.json's
+   `startup` preset drives **LED 1** (inferred from the "565nm on R/G" presets, which
+   drive that row) — confirm LED 1 really is the green ~545/565 nm unit, and confirm
+   whether its true peak is 545 or 565 nm while you're at it (the presets disagree with
+   the request). With no server running, launch just notes it in the status line.
+
 ---
 
 ## Gotchas / quick fixes

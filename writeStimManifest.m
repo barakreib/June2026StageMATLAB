@@ -79,11 +79,13 @@ function s = local_signature(rec)
 % identical protocols hash identically. Two independent 31-bit rolling hashes (kept < 2^53
 % so double arithmetic is exact).
     % Drop everything that is NOT stimulus identity before hashing: seed (varies per epoch),
-    % gamma (live rig state, already in `rig`), and the metadata / post-hoc fields
-    % (timestamp, rig, stim_signature, frame_sync) -- so repeated epochs of one protocol
-    % hash identically regardless of WHEN they ran or how many frames the display dropped.
+    % gamma (live rig state, already in `rig`), the metadata / post-hoc fields
+    % (timestamp, rig, stim_signature, frame_sync), and generated_script (the per-run
+    % generated file carries a timestamped name, but an identical protocol regenerated
+    % tomorrow is still the same stimulus) -- so repeated epochs of one protocol hash
+    % identically regardless of WHEN they ran or how many frames the display dropped.
     % (On the standalone path these fields are absent at hash time, so it is a no-op there.)
-    for f = {'seed', 'gamma', 'timestamp', 'rig', 'stim_signature', 'frame_sync'}
+    for f = {'seed', 'gamma', 'timestamp', 'rig', 'stim_signature', 'frame_sync', 'generated_script'}
         if isfield(rec, f{1}), rec = rmfield(rec, f{1}); end
     end
     b  = double(unicode2native(jsonencode(rec), 'UTF-8'));

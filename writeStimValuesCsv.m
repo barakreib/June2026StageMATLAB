@@ -5,8 +5,10 @@ function outPath = writeStimValuesCsv(outDir, stimName, seed, intendedByChannel)
 %
 % Writes one CSV row per (update, check, channel) with BOTH sides of the
 % linearization:
-%   update, check_row, check_col, channel, intended_linear, sent_frac, sent_code
-% where intended_linear is the stimulus's desired LINEAR intensity (the clamped
+%   seed, update, check_row, check_col, channel, intended_linear, sent_frac, sent_code
+% The seed column is constant down the file (and repeated in the file name): the CSV is
+% self-describing even after a rename, and joins trivially against the manifest's
+% per-epoch seeds. intended_linear is the stimulus's desired LINEAR intensity (the clamped
 % Gaussian draw), sent_frac = lcGammaCorrect(intended_linear) is the linearized
 % value handed to the display, and sent_code = uint8(round(255*sent_frac)) is
 % the 8-bit code written into the imageMatrix. These are the SAME expressions
@@ -33,9 +35,10 @@ function outPath = writeStimValuesCsv(outDir, stimName, seed, intendedByChannel)
         sentFrac = lcGammaCorrect(v);                  % same call as the stimulus builders
         sentCode = uint8(round(255 * sentFrac));       % same quantization as the imageMatrix
         [r, c, u] = ndgrid(1:ny, 1:nx, 1:nu);
-        T = [T; table(u(:), r(:), c(:), repmat(string(chans{ci}), numel(v), 1), ...
+        T = [T; table(repmat(double(seed), numel(v), 1), ...
+                      u(:), r(:), c(:), repmat(string(chans{ci}), numel(v), 1), ...
                       v(:), sentFrac(:), double(sentCode(:)), 'VariableNames', ...
-                      {'update', 'check_row', 'check_col', 'channel', ...
+                      {'seed', 'update', 'check_row', 'check_col', 'channel', ...
                        'intended_linear', 'sent_frac', 'sent_code'})]; %#ok<AGROW>
     end
     T = sortrows(T, {'update', 'check_row', 'check_col', 'channel'});

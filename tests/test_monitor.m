@@ -1,13 +1,15 @@
 function test_monitor()
 % Drive stimulusMonitor with the exact message shapes runExperiment / playAndLogTrial send.
+% Exercises BOTH hosting modes: standalone window here, and EMBEDDED in a panel (how
+% stimulusGUI hosts it -- one window, one Cancel) at the bottom.
     mon = stimulusMonitor();
     c = onCleanup(@() mon.close());
     fig = mon.fig;
     assert(isvalid(fig), 'the monitor window opened');
 
     lbl = @(txt) local_hasLabel(fig, txt);
-    btn = findall(fig, 'Type', 'uibutton', 'Text', 'Cancel run');
-    assert(~isempty(btn) && strcmp(btn.Enable, 'off'), 'Cancel is present, disabled before a run');
+    assert(isempty(findall(fig, 'Type', 'uibutton')), ...
+        'the monitor carries NO buttons -- cancelling lives on the main window alone');
 
     % ---- begin: 2 blocks (3 + 2 epochs), 10 s stimulus, LEDs on ----
     plan = struct('cellName', 'cell A', 'nBlocks', 2, 'totalEpochs', 5, ...
@@ -18,7 +20,6 @@ function test_monitor()
     plan.blocks = struct('label', {'grey', 'grey2'}, 'stimName', {'AAFoo', 'AAFoo'}, ...
                          'epochs', {3, 2}, 'stimSeconds', {10, 10});
     mon.update('begin', plan);
-    assert(strcmp(btn.Enable, 'on'), 'Cancel goes live when a run begins');
     assert(lbl('cell "cell A"') && lbl('5 epoch(s) in 2 block(s)') && lbl('Clampex ON'), ...
         'the header names the cell, the size of the run and the acquisition state');
     ax = findall(fig, 'Type', 'axes');
@@ -69,7 +70,6 @@ function test_monitor()
     % ---- finish ----
     mon.update('finish', struct('cancelled', true, 'epochs', 2, 'totalEpochs', 5, 'done', true));
     assert(lbl('CANCELLED') && lbl('Cancelled after 2 of 5 epoch(s).'), 'a cancelled run says so');
-    assert(strcmp(btn.Enable, 'off'), 'Cancel goes dead once the run has stopped');
 
     % ---- a bigger duration correction DOES redraw the timeline ----
     mon2 = stimulusMonitor();
@@ -80,6 +80,18 @@ function test_monitor()
     % 5 x (1 + 2 + 20 + 1 + 3) = 135 s
     assert(local_hasLabel(mon2.fig, 'planned total 02:15'), ...
         'a real 10 s -> 20 s correction redraws the timeline');
+
+    % ---- embedded mode: builds into a host panel, never owns/kills the window ----
+    hostFig = uifigure('Name', 'embed host', 'Position', [100 100 520 900]);
+    c4 = onCleanup(@() delete(hostFig));
+    pnl  = uipanel(hostFig, 'Title', 'Session monitor', 'Position', [10 10 500 880]);
+    mon3 = stimulusMonitor(pnl);
+    assert(mon3.fig == hostFig, 'embedded: .fig is the HOST window');
+    mon3.update('begin', plan);
+    assert(local_hasLabel(hostFig, 'cell "cell A"'), 'embedded monitor draws inside the panel');
+    assert(isempty(findall(hostFig, 'Type', 'uibutton')), 'embedded monitor adds no buttons');
+    mon3.close();
+    assert(isvalid(hostFig), 'closing an embedded monitor never deletes the host window');
 
     % ---- a listener that throws must not escape into the run ----
     stimProgress('attach', @(k, m) error('boom'), @() []);

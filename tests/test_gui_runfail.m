@@ -7,6 +7,10 @@ function test_gui_runfail()
     assert(contains(which('runExperiment'), 'rigsafe'), 'rig-safe stub must shadow the real runner');
 
     stateGuard = guiStateGuard(); %#ok<NASGU>  % keep the user's saved session
+    % Run now writes the generated stimulus script into <pwd>/generated_stimuli -- do that
+    % in a scratch dir, not in tests/.
+    td = tempname; mkdir(td); oldPwd = pwd; cd(td);
+    pwdGuard = onCleanup(@() local_restorePwd(oldPwd, td)); %#ok<NASGU>
     stimulusGUI();
     fig = findall(0, 'Type', 'figure', 'Name', 'Neitz Stimulus GUI');
     c = onCleanup(@() local_shutdown()); %#ok<NASGU>
@@ -30,13 +34,9 @@ function test_gui_runfail()
         '-- the GUI is stuck and has to be restarted (first: %s "%s")'], numel(stuck), ...
         local_kind(stuck), local_txt(stuck)));
     assert(strcmp(runBtn.Enable, 'on'), 'Run is clickable again after a failed run');
-    % Hooks deliberately OUTLIVE the run: the monitor keeps previewing the protocol after
-    % it finishes. They are dropped when the window closes, not when the run ends.
-    if isempty(findall(0, 'Type', 'figure', 'Name', 'Session monitor'))
-        assert(~stimProgress('isAttached'), 'no monitor window -> no hooks');
-    else
-        assert(stimProgress('isAttached'), 'the monitor stays attached while its window is open');
-    end
+    % Hooks deliberately OUTLIVE the run: the embedded monitor keeps previewing the
+    % protocol after it fails. They are dropped when the window closes.
+    assert(stimProgress('isAttached'), 'the embedded monitor stays attached after a failed run');
     fprintf('[run-fail] GUI fully restored after a failed run -- PASS\n');
 end
 
@@ -50,4 +50,11 @@ end
 function local_shutdown()
     stimProgress('detach');
     delete(findall(0, 'Type', 'figure'));
+end
+function local_restorePwd(oldPwd, td)
+    cd(oldPwd);
+    ws = warning('off', 'MATLAB:rmpath:DirNotFound');
+    try, rmpath(fullfile(td, 'generated_stimuli')); catch, end
+    warning(ws);
+    try, rmdir(td, 's'); catch, end
 end

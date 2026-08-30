@@ -1,7 +1,8 @@
 function test_gui_smoke()
 % Build the real window and drive the real callbacks (no rig, no Stage server).
-    st = fullfile(prefdir, 'neitzStimulusGUI_lastSession.json');   % start from a clean slate
-    if exist(st, 'file'), delete(st); end
+    % guiStateGuard moves the user's saved session ASIDE (clean slate) and restores it on
+    % any exit -- never delete the real prefdir state (that mistake has been made once).
+    stateGuard = guiStateGuard(); %#ok<NASGU>
 
     stimulusGUI();
     fig = findall(0, 'Type', 'figure', 'Name', 'Neitz Stimulus GUI');
@@ -13,8 +14,7 @@ function test_gui_smoke()
     pTbl  = local_tableWithCol(tbls, 'Parameter');
     proto = local_tableWithCol(tbls, 'Epoch #');
     assert(~isempty(pTbl) && ~isempty(proto), 'parameter + protocol tables exist');
-    assert(isequal(proto.ColumnName(:)', {'Epoch #', 'Stimulus', 'Label', 'Params'}), ...
-        'protocol columns: Epoch # first, no Epochs column');
+    assert(strcmp(proto.ColumnName{1}, 'Epoch #'), 'protocol columns: Epoch # first');
     assert(isempty(proto.Data), 'a fresh session starts with an empty protocol');
 
     % ---- button inventory / placement ----
@@ -62,15 +62,25 @@ function test_gui_smoke()
     assert(numel(epochsFld) == 1, 'found the Epochs field');
     add.ButtonPushedFcn(add, []);
     assert(size(proto.Data, 1) == 5, sprintf('5 epochs -> 5 rows (got %d)', size(proto.Data, 1)));
-    assert(isequal([proto.Data{:, 1}], 1:5), 'rows are numbered 1..5');
-    assert(all(strcmp(proto.Data(:, 2), 'Greyscale Gaussian noise (full field)')), 'all rows are one stimulus');
-    assert(contains(proto.Data{1, 4}, 'stimFrames=450') && contains(proto.Data{1, 4}, 'mu=0.4'), ...
+    assert(isequal(cellfun(@str2double, proto.Data(:, 1))', 1:5), 'rows are numbered 1..5');
+    % single-stimulus protocol: one editable column per parameter + Label + per-epoch seed
+    assert(isequal(proto.ColumnName(:)', ...
+        {'Epoch #', 'Label', 'seed', 'mu', 'sigma', 'flickerHz', 'stimFrames', 'refreshRate'}), ...
+        'gaussian protocol: Label + seed + every parameter as its own column');
+    muCol = find(strcmp(proto.ColumnName, 'mu'), 1);
+    sfCol = find(strcmp(proto.ColumnName, 'stimFrames'), 1);
+    sdCol = find(strcmp(proto.ColumnName, 'seed'), 1);
+    assert(strcmp(proto.Data{1, sfCol}, '450') && strcmp(proto.Data{1, muCol}, '0.4'), ...
         'the synced frame count and edited mu reach the protocol');
+    assert(isequal(cellfun(@str2double, proto.Data(:, sdCol))', 2:6), ...
+        'five fresh per-epoch seeds, 2..6');
 
-    % ---- a second block of the SAME stimulus keeps numbering global ----
+    % ---- a second block of the SAME stimulus keeps numbering global + seeds fresh ----
     epochsFld.Value = 2;
     add.ButtonPushedFcn(add, []);
-    assert(size(proto.Data, 1) == 7 && isequal(proto.Data{7, 1}, 7), '2 more epochs -> rows 6 and 7');
+    assert(size(proto.Data, 1) == 7 && str2double(proto.Data{7, 1}) == 7, '2 more epochs -> rows 6 and 7');
+    assert(isequal(cellfun(@str2double, proto.Data(:, sdCol))', 2:8), ...
+        'the new block''s seeds continue past the highest');
 
     % ---- Remove epoch takes one row off its own block ----
     proto.Selection = 7;
@@ -96,9 +106,11 @@ function test_gui_smoke()
     upd.ButtonPushedFcn(upd, []);
     assert(size(proto.Data, 1) == 4, ...
         sprintf('block 1 went 5 -> 3 epochs, block 2 kept 1 (got %d rows)', size(proto.Data, 1)));
-    assert(contains(proto.Data{1, 4}, 'mu=0.25') && contains(proto.Data{1, 4}, 'stimFrames=180'), ...
+    assert(strcmp(proto.Data{1, muCol}, '0.25') && strcmp(proto.Data{1, sfCol}, '180'), ...
         'the edited parameters landed on the epochs already in the table');
-    assert(~contains(proto.Data{4, 4}, 'mu=0.25'), 'the other block was left alone');
+    assert(~strcmp(proto.Data{4, muCol}, '0.25'), 'the other block was left alone');
+    assert(isequal(cellfun(@str2double, proto.Data(:, sdCol))', [2 3 4 7]), ...
+        'shrinking the block kept the leading seeds; the other block kept its own');
     assert(isequal(proto.Selection, 1), 'the selection survives the update');
 
     % ---- Cancel / Run idle state ----

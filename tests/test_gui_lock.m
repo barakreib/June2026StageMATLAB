@@ -11,6 +11,10 @@ function test_gui_lock()
         'the rig-safe stub must shadow the real runExperiment before this test runs');
 
     stateGuard = guiStateGuard(); %#ok<NASGU>  % keep the user's saved session
+    % Run now writes the generated stimulus script into <pwd>/generated_stimuli -- do that
+    % in a scratch dir, not in tests/.
+    td = tempname; mkdir(td); oldPwd = pwd; cd(td);
+    pwdGuard = onCleanup(@() local_restorePwd(oldPwd, td)); %#ok<NASGU>
     stimulusGUI();
     fig = findall(0, 'Type', 'figure', 'Name', 'Neitz Stimulus GUI');
     c = onCleanup(@() local_shutdown()); %#ok<NASGU>
@@ -21,10 +25,12 @@ function test_gui_lock()
     add = findall(fig, 'Type', 'uibutton', 'Text', 'Add block  v');
     add.ButtonPushedFcn(add, []);
 
-    monBox = findall(fig, 'Type', 'uicheckbox', 'Text', 'Session monitor');
-    assert(~isempty(monBox) && monBox.Value, 'the Session monitor checkbox exists, on by default');
-
+    % the Session monitor is EMBEDDED (one window): its panel exists, and there is
+    % exactly ONE Cancel button anywhere
+    assert(~isempty(findall(fig, 'Type', 'uipanel', 'Title', 'Session monitor')), ...
+        'the Session monitor panel is embedded in the main window');
     cancelBtn = findall(fig, 'Type', 'uibutton', 'Text', 'Cancel');
+    assert(isscalar(cancelBtn), 'exactly one Cancel button in the whole UI');
     runBtn    = findall(fig, 'Type', 'uibutton', 'Text', 'Run experiment');
     ctrls     = findall(fig, '-property', 'Enable', '-not', 'Type', 'uilabel');
     before    = arrayfun(@(x) string(x.Enable), ctrls);
@@ -54,21 +60,9 @@ function test_gui_lock()
     after = arrayfun(@(x) string(x.Enable), ctrls);
     assert(isequal(before, after), 'every control is restored to its previous state');
     assert(strcmp(runBtn.Enable, 'on') && strcmp(cancelBtn.Enable, 'off'), 'Run live, Cancel dead again');
-    % Hooks deliberately OUTLIVE the run: the monitor keeps previewing the protocol after
-    % it finishes. They are dropped when the window closes, not when the run ends.
-    if isempty(findall(0, 'Type', 'figure', 'Name', 'Session monitor'))
-        assert(~stimProgress('isAttached'), 'no monitor window -> no hooks');
-    else
-        assert(stimProgress('isAttached'), 'the monitor stays attached while its window is open');
-    end
-
-    % ---- with the monitor switched off, no monitor window is opened ----
-    delete(findall(0, 'Type', 'figure', 'Name', 'Session monitor'));
-    monBox.Value = false;
-    RIGSAFE_CALLS = {};
-    runBtn.ButtonPushedFcn(runBtn, []);
-    assert(isempty(findall(0, 'Type', 'figure', 'Name', 'Session monitor')), ...
-        'unchecking Session monitor keeps the window closed');
+    % Hooks deliberately OUTLIVE the run: the embedded monitor keeps previewing the
+    % protocol after it finishes. They are dropped when the window closes.
+    assert(stimProgress('isAttached'), 'the embedded monitor stays attached after the run');
 
     fprintf('[gui lock] %d controls locked to Cancel only, all restored -- PASS\n', numel(ctrls));
 
@@ -86,4 +80,18 @@ end
 function local_shutdown()
     stimProgress('detach');
     delete(findall(0, 'Type', 'figure'));
+end
+
+function local_restorePwd(oldPwd, td)
+    cd(oldPwd);
+    ws = warning('off', 'MATLAB:rmpath:DirNotFound');
+    try
+        rmpath(fullfile(td, 'generated_stimuli'));
+    catch
+    end
+    warning(ws);
+    try
+        rmdir(td, 's');
+    catch
+    end
 end

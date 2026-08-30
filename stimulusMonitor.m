@@ -1,23 +1,28 @@
-function mon = stimulusMonitor(parentFig)
+function mon = stimulusMonitor(parent)
 % stimulusMonitor  Live read-out of a running session: where the run is, what is on the
 % screen, what the LEDs are doing, and a timeline of the whole experiment filling in.
 %
-%   mon = stimulusMonitor()           opens the window; returns a handle struct with
-%   mon = stimulusMonitor(parentFig)  .fig, .update(kind, msg) and .close().
+%   mon = stimulusMonitor()          opens its own window (standalone / manual use)
+%   mon = stimulusMonitor(parent)    parent a FIGURE  -> own window, placed next to it
+%                                    parent a CONTAINER (uipanel / grid) -> EMBEDS the
+%                                    monitor inside it (how stimulusGUI hosts it: ONE
+%                                    window, one Cancel -- the main window's)
+%   Returns a handle struct with .fig, .update(kind, msg) and .close().
 %
 % It draws whatever stimProgress publishes -- runExperiment sends the plan and the epoch /
 % phase transitions, playAndLogTrial sends the presentation's own progress and the
-% stimulus's frequencies. stimulusGUI attaches it on Run and detaches it at the end.
+% stimulus's frequencies. stimulusGUI attaches it at startup.
 %
 % The timeline is drawn ONCE from the plan (one phase-coloured segment per epoch across the
 % whole session) and afterwards only a "now" marker and a completed-so-far overlay move --
 % so ticking at 20 Hz through a presentation stays cheap. Nothing here can affect the
 % experiment: every update is best-effort and a closed window simply stops drawing.
 %
-% Cancel here is the same Cancel as the GUI's (routed through stimProgress), so the run can
-% be stopped from whichever window is in front.
+% There is deliberately NO Cancel button here any more: cancelling lives on the main
+% window's single Cancel button (one flag, acted on at the next clean epoch boundary).
 
-    if nargin < 1, parentFig = []; end
+    if nargin < 1, parent = []; end
+    embedded = ~isempty(parent) && isvalid(parent) && ~isa(parent, 'matlab.ui.Figure');
     h = struct();                 % handles, shared with the nested callbacks
     S = struct();                 % live state, ditto
     S.plan     = [];
@@ -42,14 +47,27 @@ function mon = stimulusMonitor(parentFig)
 
     % ---------------------------------------------------------------- UI
     function buildUI()
-        h.fig = uifigure('Name', 'Session monitor', 'Position', local_place(parentFig, 620, 930), ...
-            'CloseRequestFcn', @(s, e) closeWin());
-        g = uigridlayout(h.fig, [8 1]);
+        if embedded
+            h.fig = ancestor(parent, 'figure');
+            host  = parent;
+        else
+            h.fig = uifigure('Name', 'Session monitor', 'Position', local_place(parent, 620, 930), ...
+                'CloseRequestFcn', @(s, e) closeWin());
+            host  = h.fig;
+        end
+        g = uigridlayout(host, [7 1]);
         % The two tables are FIXED at exactly their content -- 8 stimulus rows and 4 LEDs --
         % so nothing you need mid-experiment ends up behind a scrollbar. Only the timeline
-        % flexes.
-        g.RowHeight  = {58, 46, 30, 226, '1x', 182, 82, 38};
-        g.RowSpacing = 6;
+        % flexes. Embedded in the main window's side panel the rows tighten, so the
+        % timeline keeps a usable height.
+        if embedded
+            g.RowHeight = {46, 40, 24, 180, '1x', 174, 36};
+            g.RowSpacing = 4;
+            g.Padding = [4 4 4 4];
+        else
+            g.RowHeight  = {58, 46, 30, 226, '1x', 182, 64};
+            g.RowSpacing = 6;
+        end
 
         % ---- headline: where we are ----
         hp = uipanel(g);
@@ -95,26 +113,12 @@ function mon = stimulusMonitor(parentFig)
         % ("Stage server at 192.168...") tells the operator nothing they can act on.
         h.noteLbl = uilabel(g, 'Text', '', 'FontAngle', 'italic', 'FontColor', [0.45 0.45 0.45], ...
             'WordWrap', 'on', 'VerticalAlignment', 'top');
-
-        bp = uigridlayout(g, [1 2]); bp.ColumnWidth = {'1x', 150}; bp.Padding = [10 2 10 2];
-        uilabel(bp, 'Text', '');
-        h.cancelBtn = uibutton(bp, 'Text', 'Cancel run', 'ButtonPushedFcn', @(s, e) onCancel(), ...
-            'BackgroundColor', [0.70 0.15 0.15], 'FontColor', 'w', 'FontWeight', 'bold', ...
-            'Enable', 'off', 'BusyAction', 'queue', ...
-            'Tooltip', ['Same Cancel as the main window: stops at the next clean epoch ' ...
-                        'boundary, never mid-sweep.']);
-    end
-
-    function onCancel()
-        h.cancelBtn.Enable = 'off';
-        h.cancelBtn.Text   = 'Cancelling';
-        h.noteLbl.Text     = 'Cancel requested -- stopping at the end of the current epoch.';
-        h.noteLbl.FontColor = [0.85 0.45 0.10];
-        stimProgress('requestCancel');
     end
 
     function closeWin()
-        if ~isempty(h.fig) && isvalid(h.fig), delete(h.fig); end
+        % Standalone: closing the window ends the monitor. Embedded: the main GUI owns the
+        % window -- never delete it from here.
+        if ~embedded && ~isempty(h.fig) && isvalid(h.fig), delete(h.fig); end
     end
 
     % ------------------------------------------------------- the update sink
@@ -146,7 +150,6 @@ function mon = stimulusMonitor(parentFig)
         S.durFixed = false;
         [S.segs, S.total] = local_planSegments(plan);
         n = local_field(plan, 'totalEpochs', 0);
-        h.cancelBtn.Enable   = 'off';
         h.noteLbl.Text       = '';
         h.noteLbl.FontColor  = [0.45 0.45 0.45];
         h.phaseLbl.Text      = 'not started';
@@ -181,8 +184,6 @@ function mon = stimulusMonitor(parentFig)
         S.lastEpoch = [];
         S.tZero     = [];
         [S.segs, S.total] = local_planSegments(plan);
-        h.cancelBtn.Enable  = 'on';
-        h.cancelBtn.Text    = 'Cancel run';
         h.noteLbl.Text      = '';
         h.noteLbl.FontColor = [0.45 0.45 0.45];
         h.epochLbl.Text     = 'Starting run...';
@@ -294,8 +295,6 @@ function mon = stimulusMonitor(parentFig)
         S.state.phase = 'done';
         redraw(true);                 % settle the clocks + timeline marker FIRST: the
                                       % final phase text below must have the last word
-        h.cancelBtn.Enable = 'off';
-        h.cancelBtn.Text   = 'Cancel run';
         if local_field(msg, 'cancelled', false)
             h.phaseLbl.Text      = 'CANCELLED';
             h.phaseLbl.FontColor = [0.75 0.15 0.15];
@@ -316,7 +315,6 @@ function mon = stimulusMonitor(parentFig)
         % pre-flight this is the window the operator is watching, and an alert behind it is
         % an alert nobody reads.
         S.finished           = true;
-        h.cancelBtn.Enable   = 'off';
         h.epochLbl.Text      = 'RUN FAILED';
         h.phaseLbl.Text      = 'FAILED';
         h.phaseLbl.FontColor = [0.75 0.15 0.15];
@@ -389,7 +387,10 @@ function mon = stimulusMonitor(parentFig)
         xlim(h.ax, [0 max(S.total / 60, eps)]);
         ylim(h.ax, [0 1]);
         hold(h.ax, 'off');
-        h.ax.Title.String = sprintf('Session timeline  -  %s', local_legendText());
+        % Legend on the x-label, not the title: the title clips in the embedded panel.
+        h.ax.Title.String  = 'Session timeline';
+        h.ax.XLabel.String = sprintf('minutes   (%s)', local_legendText());
+        h.ax.XLabel.FontSize = 9;
     end
 
     function moveNow(el)

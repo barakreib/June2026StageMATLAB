@@ -16,11 +16,11 @@ function stimulusGUI(mode)
 % TYPE (the same stimulus with different parameters is fine — that is another block);
 % adding a different one offers to clear the protocol first.
 %
-% Epochs already in the table are EDITABLE, not just removable. Click one and its block
-% loads back into the top window — stimulus, parameters, label, epoch count. Change what
-% you want and press "Update epochs" to write it back onto those same rows (with nothing
-% selected it targets the only block, or asks before touching them all). "Add block" is
-% then only for genuinely appending more. Under the table, "Remove epoch" drops the
+% Epochs already in the table are EDITABLE, not just removable. Every column is live:
+% Label, this epoch's seed (seeded stimuli), and every parameter has its own column —
+% type in a cell and just that epoch changes (it splits out of its block; edit it back and
+% it re-merges). Clicking a row also loads its block into the top window for bulk edits
+% via "Update epochs" / "Update selected". Under the table, "Remove epoch" drops the
 % selected row — and the block with its last epoch — and "Clear all" empties the protocol.
 %
 % Parameters carry a redundant "duration (s)" row alongside stimFrames. Type seconds and the
@@ -32,13 +32,54 @@ function stimulusGUI(mode)
 % .abf is ever left without its manifest row. The partly-run protocol still gets its
 % Keep/Discard prompt, so a mistyped run can be thrown away on the spot.
 %
+% Run does NOT call the AA* stimulus files. It writes ONE generated m-file for the run
+% (generateStimScript.m -> <data dir>/generated_stimuli/) that reproduces the chosen
+% stimulus exactly and renders the configured phases around it, then hands that to
+% runExperiment. The PHASES panel (right) sets, for pre-stim / post-stim / inter-stim and
+% the end of the run: a full-screen RGB value (linear 0..1, linearized like every stimulus
+% color) and an LED state ("(main grid)" = the LED grid below, "Off" = dark, or any LED
+% preset from rig_config.json). Pre/post are rendered inside the epoch's presentation
+% (frame-locked, sync bar dark), inter-stim/end are held on the projector between epochs.
+% The generated file stays on disk next to the day's manifest as the exact record of what
+% ran; the AA* files remain untouched and standalone-runnable.
+%
+% QUICK LOAD (top right) gives ten assignable slots for your most common experiments:
+% click a slot to load its saved experiment; "Assign slot..." binds the current protocol
+% (or any saved .json) to a slot. Assignments live in experiments/quickload_slots.json.
+%
+% THE SYNC BAR (rightmost W/8) is a permanent instrument: no full-screen value ever covers
+% it. During a presentation it shows three photodiode segments -- top: the projector FRAME
+% CLOCK (toggles every frame); middle: the STIMULUS UPDATE CLOCK (the legacy sync pattern,
+% dark outside the stimulus); bottom: the STIMULUS ENVELOPE (solid while stimulus frames
+% are on screen). On held screens (inter-stim / run end / startup) the bar is dark -- a
+% held frame is static, so there are no frame updates to report.
+%
+% ON LAUNCH, the GUI probes the Stage server (bounded, never hangs): if found, it sends a
+% dark full-screen startup state (rig_config `startup_screen_rgb`) and loads the LED
+% preset named "startup" (rig_config led_presets -- default R/G dark, B duty 0.25 on the
+% 545 nm LED's row; EDIT THAT PRESET so the row matches your wiring).
+%
 % The "stimulus protocol complete" Keep/Discard dialog appears ONCE, at the end of the whole
 % run — never between epochs, even when they carry different parameters. Discard removes
 % every epoch of the run from the manifest and marks their .abf files to skip on import.
 %
-% Seeds are handled automatically: for the seeded Gaussian stimuli runExperiment advances
-% the seed by 1 per epoch from "seedBase" (each seed recorded in the day's stim manifest),
-% so repeated epochs are INDEPENDENT noise. To add or edit a stimulus, edit stimRegistry.m.
+% Seeds are PER EPOCH: every Gaussian epoch carries its own seed (auto-assigned +1 past
+% the highest in use, editable in the table's seed column), so repeated epochs are
+% INDEPENDENT noise. Each epoch's seed is recorded in the day's stim manifest and in the
+% values CSV when the debug dump is on. To add or edit a stimulus, edit stimRegistry.m.
+%
+% The SESSION MONITOR is embedded in this window (right panel) — epoch progress, phase
+% clock, stimulus numbers, LED state, and the whole-session timeline. ONE window, ONE
+% Cancel button (bottom middle).
+%
+% The SCREENS & LEDS band (bottom) sets, per phase — pre-stim | stimulus | post-stimulus |
+% inter-stim | end of stim — the 4x3 LED duty grid (preset dropdown to fill it) and, for
+% every phase but the stimulus itself, the full-screen RGB (three boxes + a color picker).
+% "copy <phase>" buttons pull another phase's grid + screen across. "sync and lock B
+% channels" makes the far-right master B column drive every grid's B channel (the
+% individual B columns gray out). An all-dark "end of stim" grid = the classic dark+close
+% LED teardown; anything lit there stays ON after the run (driver handed off as base
+% `rig`).
 
     if nargin >= 1 && ischar(mode) && strcmp(mode, '__selftest__')
         selftest();
@@ -53,6 +94,8 @@ function stimulusGUI(mode)
     expDir    = fullfile(fileparts(mfilename('fullpath')), 'experiments');
     if ~exist(expDir, 'dir'), mkdir(expDir); end
     stateFile = fullfile(prefdir, 'neitzStimulusGUI_lastSession.json');
+    qlFile    = fullfile(expDir, 'quickload_slots.json');
+    qlSlots   = local_loadQuickSlots(qlFile);   % the 10 assignable experiment slots
     h = struct();
     rigConn = [];   % handle to the SHARED rig (same object as base-workspace `rig`; see quickRig)
     cancelRequested = false;   % set by the Cancel button, polled by runExperiment (see onCancel)
@@ -60,32 +103,50 @@ function stimulusGUI(mode)
     monitor         = [];      % the live "Session monitor" window (stimulusMonitor)
 
     buildUI();
+    openMonitor();      % the embedded Session monitor (right panel) + its stimProgress hooks
     onSelectStim();
     loadState();        % restore the last-used settings + protocol, if any
     refreshProtocol();  % unconditional: with no saved state loadState returns early, and the
                         % table buttons would otherwise start enabled over an empty protocol
+    applyStartupState();  % Stage server found -> dark startup screen + "startup" LED preset
 
     % ================= nested callbacks (share reg / blocks / curEntry / h) =================
     function buildUI()
-        h.fig = uifigure('Name', 'Neitz Stimulus GUI', 'Position', [80 60 1100 1010], ...
+        % ONE window: builder (middle), embedded Session monitor (right), and the
+        % screens-&-LEDs band along the bottom. One Cancel button, on this window.
+        h.fig = uifigure('Name', 'Neitz Stimulus GUI', 'Position', [30 40 1580 1010], ...
             'CloseRequestFcn', @(s,e) onClose());
-        outer = uigridlayout(h.fig, [1 2]);
-        outer.ColumnWidth = {250, '1x'};
+        outer = uigridlayout(h.fig, [2 1]);
+        outer.RowHeight  = {'1x', 300};
+        outer.Padding    = [6 6 6 6];
+        outer.RowSpacing = 6;
+        top = uigridlayout(outer, [1 3]);
+        top.ColumnWidth   = {235, '1x', 480};
+        top.Padding       = [0 0 0 0];
+        top.ColumnSpacing = 8;
 
-        lp = uipanel(outer, 'Title', 'Stimuli');
+        % ---------------- left: stimulus list + quick-load slots ----------------
+        lc = uigridlayout(top, [2 1]);
+        lc.RowHeight  = {'1x', 330};
+        lc.Padding    = [0 0 0 0];
+        lc.RowSpacing = 6;
+        lp = uipanel(lc, 'Title', 'Stimuli');
         lg = uigridlayout(lp, [2 1]); lg.RowHeight = {'1x', 74};
         h.list = uilistbox(lg, 'Items', {reg.name}, 'ValueChangedFcn', @(s,e) onSelectStim());
         uilabel(lg, 'Text', sprintf(['%d stimuli. Pick one, set its parameters and how many ' ...
             'epochs, then Add block. One stimulus type per protocol.'], numel(reg)), ...
             'WordWrap', 'on', 'FontAngle', 'italic');
+        buildQuickLoad(lc);
 
-        rp = uigridlayout(outer, [14 1]);
+        % ---------------- middle: the protocol builder ----------------
+        rp = uigridlayout(top, [10 1]);
         % Row 3 (the parameter table) is resized to its content by showEntry: exactly tall
         % enough that refreshRate is never scrolled out of sight -- it is half of the duration
         % relationship -- and no taller, so short stimuli hand the slack to the epoch table,
         % which is the row that flexes. Tight RowSpacing buys that table a few more rows.
-        rp.RowHeight  = {28, 24, local_paramTableHeight(8), 40, 20, '1x', 34, 36, 26, 132, 34, 36, 30, 40};
+        rp.RowHeight  = {28, 24, local_paramTableHeight(8), 40, 20, '1x', 34, 30, 32, 40};
         rp.RowSpacing = 4;
+        rp.Padding    = [0 0 0 0];
         h.rightGrid   = rp;
 
         % ----- Cell (patched cell) -- session identity for the nested manifest -----
@@ -126,10 +187,14 @@ function stimulusGUI(mode)
 
         % One row per EPOCH, not per block: "5 epochs" + Add block appends 5 identical rows,
         % so the table shows exactly what will be presented. Blocks still exist underneath --
-        % they group epochs that share one parameter set (see onProtocolComplete).
-        h.protoTable = uitable(rp, 'ColumnName', {'Epoch #', 'Stimulus', 'Label', 'Params'}, ...
-            'ColumnWidth', {70, 240, 120, '1x'}, 'RowName', {}, 'SelectionType', 'row', ...
-            'Multiselect', 'on', 'SelectionChangedFcn', @(s,e) onSelectEpoch());
+        % they group epochs that share one parameter set (see onProtocolComplete). Every
+        % parameter gets ITS OWN column (plus Label, plus this epoch's seed for seeded
+        % stimuli) and the cells are EDITABLE -- typing in a cell rewrites just that epoch.
+        % refreshProtocol() rebuilds the columns to match the protocol's stimulus type.
+        h.protoTable = uitable(rp, 'ColumnName', {'Epoch #', 'Label'}, ...
+            'ColumnWidth', {56, 110}, 'RowName', {}, 'SelectionType', 'row', ...
+            'Multiselect', 'on', 'SelectionChangedFcn', @(s,e) onSelectEpoch(), ...
+            'CellEditCallback', @(s, e) onEpochCellEdit(e));
 
         % Row operations sit with the rows they act on, under the table.
         tb = uigridlayout(rp, [1 4]); tb.ColumnWidth = {140, 130, 110, '1x'};
@@ -146,36 +211,6 @@ function stimulusGUI(mode)
         uilabel(tb, 'Text', 'Click an epoch to load it above, edit, then Update.', ...
             'FontAngle', 'italic', 'FontColor', [0.45 0.45 0.45]);
 
-        % ----- LEDs (NeitzLedRig): one 4x3 intensity grid; a preset fills it -----
-        lh = uigridlayout(rp, [1 10]);
-        lh.ColumnWidth = {'fit', 'fit', 130, 'fit', 110, 'fit', 184, 'fit', 'fit', '1x'};
-        lh.Padding = [6 4 6 4]; lh.ColumnSpacing = 8;
-        uilabel(lh, 'Text', 'LEDs:', 'FontWeight', 'bold');
-        uilabel(lh, 'Text', 'Mode');
-        h.ledMode = uidropdown(lh, 'Items', {'off (0)', 'DC red (1)', 'video RGB (2)', 'video RGB + sync (3)'}, ...
-            'ItemsData', [0 1 2 3], 'Value', 2);
-        uilabel(lh, 'Text', 'Port');
-        h.ledPort = uieditfield(lh, 'text', 'Value', char(loadRigConfig('led_port', 'COM3')), ...
-            'Tooltip', ['LED-driver port (default: rig_config led_port -- hard-coded is fastest). ' ...
-                        'Type AUTO to probe for the FPGA instead (slower), or a /dev/cu.* node on macOS.']);
-        uilabel(lh, 'Text', 'Preset');
-        h.ledPreset = uidropdown(lh, 'Items', local_presetNames(presets), 'ValueChangedFcn', @(s,e) onPreset(), ...
-            'Tooltip', 'Fill the LED grid with a 12-value preset from rig_config.json.');
-        h.ledSetNow = uibutton(lh, 'Text', 'Set now', 'ButtonPushedFcn', @(s,e) onLedSetNow(), ...
-            'Tooltip', ['Quick set: push the LED grid and Mode to the rig immediately, ' ...
-                        'without running an experiment -- for LED changes between runs.']);
-        h.ledOffNow = uibutton(lh, 'Text', 'Off now', 'ButtonPushedFcn', @(s,e) onLedOffNow(), ...
-            'Tooltip', 'Quick set: mode 0 (all LEDs dark) immediately. Grid values are kept.');
-
-        % status line (LED quick-set feedback)
-        sel = uigridlayout(rp, [1 1]); sel.Padding = [44 2 6 2];
-        h.ledStatus  = uilabel(sel, 'Text', '', 'FontAngle', 'italic', ...
-            'FontColor', [0.45 0.45 0.45], 'HorizontalAlignment', 'right');
-
-        % one 4x3 intensity grid (LED 0..3 x R/G/B), applied during the run
-        tg = uigridlayout(rp, [1 1]); tg.Padding = [6 0 6 0];
-        h.ledGrid = local_ledTable(tg);
-
         % ----- Stage/OpenGL server host (blank = this machine; an IPv4 = remote) -----
         sr = uigridlayout(rp, [1 3]); sr.ColumnWidth = {'fit', 200, '1x'}; sr.Padding = [6 3 6 3];
         uilabel(sr, 'Text', 'Stage host (IPv4):');
@@ -184,18 +219,10 @@ function stimulusGUI(mode)
                         'IPv4 (e.g. 192.168.0.49) connects to that computer. Saved to rig_config on Run.']);
         uilabel(sr, 'Text', 'blank / localhost = this machine', 'FontAngle', 'italic', 'FontColor', [0.45 0.45 0.45]);
 
-        og = uigridlayout(rp, [1 8]); og.ColumnWidth = {'fit', 58, 'fit', 58, 'fit', 58, 'fit', 58};
-        og.Padding = [6 3 6 3];
-        onPlanEdit = @(s, e) pushPreview();   % these set the shape of every epoch
-        uilabel(og, 'Text', 'preStim (s)');  h.preStim  = uieditfield(og, 'numeric', 'Value', 2, 'Limits', [0 Inf], 'ValueChangedFcn', onPlanEdit);
-        uilabel(og, 'Text', 'postStim (s)'); h.postStim = uieditfield(og, 'numeric', 'Value', 1, 'Limits', [0 Inf], 'ValueChangedFcn', onPlanEdit);
-        uilabel(og, 'Text', 'itp (s)');      h.itp      = uieditfield(og, 'numeric', 'Value', 3, 'Limits', [0 Inf], 'ValueChangedFcn', onPlanEdit);
-        uilabel(og, 'Text', 'seedBase');     h.seedBase = uieditfield(og, 'numeric', 'Value', 2, 'Limits', [0 Inf], 'RoundFractionalValues', 'on');
-
         % Two independent enables, ON by default. Unchecking one makes Run skip
         % exactly those lines: Clampex off -> no acquisition trigger; LED driver
         % off -> runExperiment never opens NeitzLedRig (LEDs left untouched).
-        dr = uigridlayout(rp, [1 4]); dr.ColumnWidth = {230, 160, 200, '1x'};
+        dr = uigridlayout(rp, [1 3]); dr.ColumnWidth = {230, 160, '1x'};
         dr.Padding = [6 2 6 2]; dr.ColumnSpacing = 24;
         h.triggerAcq = uicheckbox(dr, 'Text', 'Clampex acquisition', 'Value', true, 'FontWeight', 'bold', ...
             'Tooltip', ['ON: Run triggers Clampex acquisition each epoch. OFF: present via the Stage ' ...
@@ -203,11 +230,7 @@ function stimulusGUI(mode)
         h.ledEnable = uicheckbox(dr, 'Text', 'LED driver', 'Value', true, 'FontWeight', 'bold', ...
             'Tooltip', ['ON: Run opens NeitzLedRig and applies the LED grids during the session. ' ...
                         'OFF: the LED driver is not touched by Run.']);
-        h.showMonitor = uicheckbox(dr, 'Text', 'Session monitor', 'Value', true, 'FontWeight', 'bold', ...
-            'ValueChangedFcn', @(s,e) onMonitorToggle(), ...
-            'Tooltip', ['Live monitor window: the planned session timeline while you build the ' ...
-                        'protocol, then epoch progress, phase clock, stimulus frequencies and ' ...
-                        'LED state while it runs. It carries its own Cancel button.']);
+        uilabel(dr, 'Text', '');
 
         % "New" is gone: "Clear all" under the table does the same job, next to the rows it clears.
         bg = uigridlayout(rp, [1 5]); bg.ColumnWidth = {'1x', 120, 120, '1.4x', 110};
@@ -218,6 +241,7 @@ function stimulusGUI(mode)
         h.runBtn  = uibutton(bg, 'Text', 'Run experiment', 'ButtonPushedFcn', @(s,e) onRun(), ...
             'BackgroundColor', [0.20 0.55 0.30], 'FontColor', 'w', 'FontWeight', 'bold', ...
             'Interruptible', 'on');   % MUST stay 'on' -- it is what lets Cancel fire mid-run
+        % THE one and only Cancel button (the embedded monitor has none).
         h.cancelBtn = uibutton(bg, 'Text', 'Cancel', 'ButtonPushedFcn', @(s,e) onCancel(), ...
             'BackgroundColor', [0.70 0.15 0.15], 'FontColor', 'w', 'FontWeight', 'bold', ...
             'Enable', 'off', 'BusyAction', 'queue', ...
@@ -225,9 +249,192 @@ function stimulusGUI(mode)
                         'sweep is already triggered is always finished and logged, so no .abf is ' ...
                         'left without its manifest row.']);
 
+        % ---------------- right: the Session monitor, embedded ----------------
+        h.monPanel = uipanel(top, 'Title', 'Session monitor');
+
+        % ---------------- bottom: screens & LEDs around the stimulus ----------------
+        buildPhaseBand(outer);
+
         % Locked / restored wholesale by lockUI-unlockUI for the duration of a run.
         h.lockList  = gobjects(0);
         h.lockState = strings(0);
+    end
+
+    function buildQuickLoad(parent)
+        % Quick load: 10 assignable slots for the most common experiments.
+        qp = uipanel(parent, 'Title', 'Quick load');
+        qg = uigridlayout(qp, [2 1]);
+        qg.RowHeight   = {264, 'fit'};
+        qg.Padding     = [6 4 6 4];
+        qg.RowSpacing  = 4;
+        h.qlGroup = uibuttongroup(qg, 'BorderType', 'none', ...
+            'SelectionChangedFcn', @(s, e) onQuickLoad());
+        % A hidden "none" radio, created FIRST so it takes the group's default selection:
+        % a uibuttongroup cannot have SelectedObject = [], and no slot should light up
+        % until one is actually loaded. Selecting it programmatically = "no slot".
+        h.qlNone = uiradiobutton(h.qlGroup, 'Text', '', 'Position', [-200 -200 10 10], ...
+            'Visible', 'off', 'UserData', 0);
+        h.qlRadio = gobjects(1, 10);
+        for qi = 1:10
+            h.qlRadio(qi) = uiradiobutton(h.qlGroup, 'Text', local_quickLabel(qi, qlSlots(qi)), ...
+                'Position', [8, 264 - 26 * qi, 200, 22], 'UserData', qi);
+        end
+        h.qlGroup.SelectedObject = h.qlNone;   % nothing loaded yet -> no slot lit
+        h.qlAssign = uibutton(qg, 'Text', 'Assign slot...', 'ButtonPushedFcn', @(s,e) onAssignSlot(), ...
+            'Tooltip', ['Bind a slot to the current protocol (saved as a .json under experiments/) ' ...
+                        'or to an existing saved experiment. Slots live in experiments/quickload_slots.json. ' ...
+                        'Click a slot to load that experiment.']);
+    end
+
+    function buildPhaseBand(parent)
+        % The screens-&-LEDs band: one section per phase -- pre-stim | stimulus |
+        % post-stimulus | inter-stim | end of stim -- each with a preset dropdown, its 4x3
+        % LED duty grid, and (except "stimulus", whose screen IS the stimulus) a screen
+        % column: R/G/B of the full-screen value with a color picker under it. The far
+        % right holds the master B column: with "sync and lock B channels" ticked it
+        % drives every grid's B channel and the individual B columns gray out.
+        band = uipanel(parent, 'Title', ...
+            'Screens & LEDs  (LED duty + screen RGB are linear 0..1; screens exclude the sync bar)');
+        bgl = uigridlayout(band, [2 1]);
+        bgl.RowHeight  = {26, '1x'};
+        bgl.Padding    = [6 2 6 2];
+        bgl.RowSpacing = 2;
+
+        % --- strip: driver controls + status + the B-channel lock ---
+        st = uigridlayout(bgl, [1 9]);
+        st.ColumnWidth   = {'fit', 'fit', 130, 'fit', 100, 'fit', 'fit', '1x', 'fit'};
+        st.Padding       = [0 0 0 0];
+        st.ColumnSpacing = 8;
+        uilabel(st, 'Text', 'LED driver:', 'FontWeight', 'bold');
+        uilabel(st, 'Text', 'Mode');
+        h.ledMode = uidropdown(st, 'Items', {'off (0)', 'DC red (1)', 'video RGB (2)', 'video RGB + sync (3)'}, ...
+            'ItemsData', [0 1 2 3], 'Value', 2);
+        uilabel(st, 'Text', 'Port');
+        h.ledPort = uieditfield(st, 'text', 'Value', char(loadRigConfig('led_port', 'COM3')), ...
+            'Tooltip', ['LED-driver port (default: rig_config led_port -- hard-coded is fastest). ' ...
+                        'Type AUTO to probe for the FPGA instead (slower), or a /dev/cu.* node on macOS.']);
+        h.ledSetNow = uibutton(st, 'Text', 'Set now', 'ButtonPushedFcn', @(s,e) onLedSetNow(), ...
+            'Tooltip', ['Quick set: push the STIMULUS grid and Mode to the rig immediately, ' ...
+                        'without running an experiment.']);
+        h.ledOffNow = uibutton(st, 'Text', 'Off now', 'ButtonPushedFcn', @(s,e) onLedOffNow(), ...
+            'Tooltip', 'Quick set: mode 0 (all LEDs dark) immediately. Grid values are kept.');
+        h.ledStatus = uilabel(st, 'Text', '', 'FontAngle', 'italic', ...
+            'FontColor', [0.45 0.45 0.45], 'HorizontalAlignment', 'right');
+        h.syncB = uicheckbox(st, 'Text', 'sync and lock B channels', 'Value', false, ...
+            'ValueChangedFcn', @(s, e) onSyncB(), ...
+            'Tooltip', ['ON: the far-right B column drives the B channel of EVERY phase grid ' ...
+                        'and the individual B columns lock (grayed). OFF: each grid''s B is its own.']);
+
+        % --- the five phase sections + the master B column ---
+        sc = uigridlayout(bgl, [1 7]);
+        sc.ColumnWidth   = {'fit', 'fit', 'fit', 'fit', 'fit', 'fit', '1x'};
+        sc.Padding       = [0 0 0 0];
+        sc.ColumnSpacing = 10;
+        buildPhaseSection(sc, 'pre',   'pre-stim',      2);
+        buildPhaseSection(sc, 'stim',  'stimulus',     []);
+        buildPhaseSection(sc, 'post',  'post-stimulus', 1);
+        buildPhaseSection(sc, 'iti',   'inter-stim',    3);
+        buildPhaseSection(sc, 'final', 'end of stim',  []);
+        buildMasterB(sc);
+        % duration aliases: the rest of the GUI (gatherOpts, loaders, the monitor plan)
+        % keeps its long-standing handle names
+        h.preStim  = h.phDur.pre;
+        h.postStim = h.phDur.post;
+        h.itp      = h.phDur.iti;
+        h.ledGrid  = h.phGrid.stim;    % the during-stimulus grid = the "main" LED grid
+        addCopyButtons();
+    end
+
+    function buildPhaseSection(parent, key, ttl, durDefault)
+        hasScreen = ~strcmp(key, 'stim');
+        sg = uigridlayout(parent, [4 1]);
+        sg.RowHeight  = {20, 24, 148, 24};
+        sg.Padding    = [0 0 0 0];
+        sg.RowSpacing = 2;
+        % title (+ its duration, for the phases that have one)
+        tr = uigridlayout(sg, [1 4]);
+        tr.ColumnWidth = {'fit', '1x', 'fit', 46};
+        tr.Padding = [2 0 2 0]; tr.ColumnSpacing = 4;
+        uilabel(tr, 'Text', ttl, 'FontWeight', 'bold');
+        uilabel(tr, 'Text', '');
+        if ~isempty(durDefault)
+            uilabel(tr, 'Text', 's:');
+            h.phDur.(key) = uieditfield(tr, 'numeric', 'Value', durDefault, 'Limits', [0 Inf], ...
+                'ValueChangedFcn', @(s, e) pushPreview(), ...
+                'Tooltip', sprintf('Duration of the %s phase in seconds.', ttl));
+        end
+        h.phPreset.(key) = uidropdown(sg, 'Items', local_presetNames(presets), ...
+            'Tag', ['phPreset_' key], 'ValueChangedFcn', @(s, e) onPhasePreset(key), ...
+            'Tooltip', 'Fill this LED grid from a rig_config.json preset.');
+        if hasScreen
+            cg = uigridlayout(sg, [1 2]);
+            cg.ColumnWidth = {190, 52};
+            cg.Padding = [0 0 0 0]; cg.ColumnSpacing = 3;
+        else
+            cg = uigridlayout(sg, [1 1]);
+            cg.ColumnWidth = {190};
+            cg.Padding = [0 0 0 0];
+        end
+        h.phGrid.(key) = uitable(cg, 'Data', zeros(4, 3), 'ColumnName', {'R', 'G', 'B'}, ...
+            'RowName', {'LED 0', 'LED 1', 'LED 2', 'LED 3'}, 'ColumnEditable', [true true true], ...
+            'ColumnWidth', {42, 42, 42}, 'CellEditCallback', @(s, e) onPhaseGridEdit(key, e), ...
+            'Tag', ['phGrid_' key], ...
+            'Tooltip', sprintf('%s: per-LED duty (0..1) on the R/G/B timing channels.', ttl));
+        if hasScreen
+            scg = uigridlayout(cg, [4 1]);
+            scg.RowHeight  = {24, 24, 24, 24};
+            scg.Padding    = [0 22 0 0];    % top pad ~ the table header, so rows line up
+            scg.RowSpacing = 3;
+            h.phScr.(key) = gobjects(1, 3);
+            chan = 'RGB';
+            for ci = 1:3
+                h.phScr.(key)(ci) = uieditfield(scg, 'numeric', 'Value', 0, 'Limits', [0 1], ...
+                    'ValueChangedFcn', @(s, e) onPhaseScreen(key), 'FontSize', 11, ...
+                    'Tooltip', sprintf('Full-screen %c during %s (linear 0..1).', chan(ci), ttl));
+            end
+            h.phSw.(key) = uibutton(scg, 'Text', '', 'BackgroundColor', [0 0 0], ...
+                'ButtonPushedFcn', @(s, e) onPhaseSwatch(key), ...
+                'Tooltip', 'Pick the screen color (fills the R/G/B boxes above).');
+        end
+        % row 4 (copy buttons) is filled by addCopyButtons once every section exists
+        h.phCopyRow.(key) = uigridlayout(sg, [1 3]);
+        h.phCopyRow.(key).Padding = [0 0 0 0];
+        h.phCopyRow.(key).ColumnSpacing = 3;
+    end
+
+    function buildMasterB(parent)
+        mg = uigridlayout(parent, [4 1]);
+        mg.RowHeight  = {20, 24, 148, 24};
+        mg.Padding    = [0 0 0 0];
+        mg.RowSpacing = 2;
+        uilabel(mg, 'Text', 'B (locked)', 'FontWeight', 'bold', 'HorizontalAlignment', 'center', ...
+            'Tooltip', 'Master B column: drives every grid''s B channel while "sync and lock B channels" is on.');
+        uilabel(mg, 'Text', '');
+        h.masterB = uitable(mg, 'Data', zeros(4, 1), 'ColumnName', {'B'}, ...
+            'RowName', {'LED 0', 'LED 1', 'LED 2', 'LED 3'}, 'ColumnEditable', true, ...
+            'ColumnWidth', {42}, 'Enable', 'off', 'Tag', 'masterB', ...
+            'CellEditCallback', @(s, e) onMasterBEdit(e));
+        uilabel(mg, 'Text', '');
+    end
+
+    function addCopyButtons()
+        % "copy <phase>" buttons under each SCREEN phase: pull that phase's grid + screen
+        % color into this one. (The stimulus section has no screen and its grid is the main
+        % grid -- it gets no copy row.)
+        names = struct('pre', 'pre-stim', 'post', 'post-stim', 'iti', 'inter-stim', 'final', 'end');
+        keys  = {'pre', 'post', 'iti', 'final'};
+        for di = 1:numel(keys)
+            dst    = keys{di};
+            others = keys(~strcmp(keys, dst));
+            for si = 1:numel(others)
+                src = others{si};
+                uibutton(h.phCopyRow.(dst), 'Text', ['copy ' names.(src)], 'FontSize', 10, ...
+                    'Tag', sprintf('copy_%s_from_%s', dst, src), ...
+                    'ButtonPushedFcn', @(s, e) onCopyPhase(dst, src), ...
+                    'Tooltip', sprintf('Copy the %s LED grid and screen color into %s.', ...
+                                       names.(src), names.(dst)));
+            end
+        end
     end
 
     function onSelectStim()
@@ -241,7 +448,7 @@ function stimulusGUI(mode)
         h.rightGrid.RowHeight{3} = local_paramTableHeight(size(h.paramTable.Data, 1));
         h.paramTitle.Text = ['Parameters for:  ' curEntry.name '   (' curEntry.fn ')'];
         if local_seedArgFor(curEntry) > 0
-            h.seedNote.Text = 'Seed: +1 per epoch from seedBase, recorded per epoch in the manifest.';
+            h.seedNote.Text = 'Seeds: one per epoch, auto-assigned -- editable in the seed column.';
         else
             h.seedNote.Text = 'Seed: not applicable to this stimulus.';
         end
@@ -294,13 +501,35 @@ function stimulusGUI(mode)
         end
         try
             ps = local_paramsFromRows(curEntry, h.paramTable.Data);
+            n  = round(h.epochs.Value);
             b  = struct('stimName', curEntry.name, 'fnName', curEntry.fn, 'params', ps, ...
-                        'epochs', round(h.epochs.Value), 'label', char(h.label.Value));
+                        'epochs', n, 'label', char(h.label.Value), ...
+                        'seeds', local_nextSeeds(blocks, n, local_seedArgFor(curEntry) > 0));
             blocks(end + 1) = b;
             refreshProtocol();
         catch err
             uialert(h.fig, err.message, 'Invalid parameter');
         end
+    end
+
+    function onEpochCellEdit(evt)
+        % A protocol-table cell was typed into: rewrite JUST that epoch (Label, its seed,
+        % or one parameter). The epoch splits out of its block if it no longer matches its
+        % neighbours; identical neighbours re-merge. Bad input rolls the table back.
+        if isempty(evt.Indices), return; end
+        row = evt.Indices(1);
+        col = evt.Indices(2);
+        [~, ~, ~, keys] = local_epochTableSpec(reg, blocks);
+        if col > numel(keys) || strcmp(keys{col}, 'epoch') || strcmp(keys{col}, 'readonly')
+            refreshProtocol(row);
+            return;
+        end
+        try
+            blocks = local_applyCellEdit(reg, blocks, row, keys{col}, evt.NewData);
+        catch err
+            uialert(h.fig, err.message, 'Invalid value');
+        end
+        refreshProtocol(row);
     end
 
     function updateTableButtons()
@@ -314,22 +543,334 @@ function stimulusGUI(mode)
     end
 
     function pushPreview()
-        % Publish the protocol as a PLANNED session, so the monitor draws its timeline before
-        % anything runs -- and redraws it every time the protocol changes. The first epoch
-        % brings the window up (unless the monitor is switched off); an empty protocol never
-        % opens it, so just launching the GUI does not cost a second window.
-        if h.showMonitor.Value && ~isempty(blocks), openMonitor(); end
+        % Publish the protocol as a PLANNED session, so the embedded monitor draws its
+        % timeline before anything runs -- and redraws it every time the protocol changes.
         if isempty(monitor) || ~isfield(monitor, 'fig') || ~isvalid(monitor.fig), return; end
         stimProgress('preview', local_previewPlan(reg, blocks, gatherOpts(), ...
                                                   strtrim(char(h.cellName.Value))));
     end
 
-    function onMonitorToggle()
-        if h.showMonitor.Value
-            openMonitor();
-            pushPreview();
+    % ================= startup state: defined dark screen + background LED =================
+    function applyStartupState()
+        % As soon as the GUI detects the Stage server, put the rig into a DEFINED state:
+        % full-screen startup RGB (rig_config `startup_screen_rgb`, default black; the
+        % sync-bar column stays dark) and the LED preset named "startup" (rig_config
+        % led_presets; default: all R/G channels 0, B duty 0.25 on the 545 nm LED's row).
+        % Everything here is best-effort and BOUNDED -- no server, a wedged server, or no
+        % LED driver must never hang or break GUI launch; the status line says what
+        % happened either way.
+        drawnow;                              % paint the window before any network wait
+        host = stageHost();
+        if ~local_portOpen(host, 5678, 400)
+            setLedStatus(sprintf('Stage server not detected at %s -- startup screen skipped.', ...
+                host), [0.45 0.45 0.45]);
+            return;
+        end
+        [alive, cv] = local_stageAnswers(host, 5678, 2);
+        if ~alive
+            setLedStatus(sprintf(['Stage server at %s accepted but did not answer -- ' ...
+                'startup screen skipped.'], host), [0.85 0.45 0.10]);
+            return;
+        end
+        % The probe's reply IS the canvas size: report it, and flag a server that is not
+        % running at the DLP's native diamond resolution (rig_config canvas_size).
+        cvNote = '';
+        if numel(cv) == 2
+            cvNote = sprintf(' (canvas %d x %d)', cv(1), cv(2));
+            want = double(reshape(loadRigConfig('canvas_size', [912 1140]), 1, []));
+            if numel(want) == 2 && ~isequal(cv(:)', want)
+                cvNote = sprintf(' (canvas %d x %d -- rig_config expects %d x %d!)', ...
+                                 cv(1), cv(2), want(1), want(2));
+            end
+        end
+        try
+            c = stageClientShared('get');
+            stageHoldScreen(c, local_coerceRGB(loadRigConfig('startup_screen_rgb', [0 0 0])), 60);
+            stageClientShared('release');     % free the single-client server again
+            msg = sprintf('Startup: screen set (dark) on %s%s.', host, cvNote);
+        catch err
+            stageClientShared('release');
+            setLedStatus(['Startup screen failed: ' err.message], [0.85 0.45 0.10]);
+            return;
+        end
+        k = find(strcmp({presets.name}, 'startup'), 1);
+        if isempty(k)
+            msg = [msg '  (No "startup" LED preset in rig_config -- LEDs untouched.)'];
         else
-            closeMonitor();
+            try
+                r    = quickRig();
+                vals = local_coerce43(presets(k).values);
+                cols = {'r', 'g', 'b'};
+                for li = 1:4
+                    for ci = 1:3
+                        r.setIntensity(li - 1, cols{ci}, vals(li, ci));
+                    end
+                end
+                r.setMode(h.ledMode.Value);
+                msg = [msg '  LEDs -> "startup" preset.'];
+            catch
+                releaseQuickRig();            % drop a half-open handle; no popup at launch
+                msg = [msg '  (LED driver not reachable -- startup preset skipped.)'];
+            end
+        end
+        setLedStatus(msg, [0.13 0.45 0.20]);
+    end
+
+    % ============== screens & LEDs band (per-phase grids + screen colors) ==============
+    function onPhaseGridEdit(key, evt)
+        % Keep every cell a clamped number; a locked B column cannot be edited at all
+        % (ColumnEditable), so nothing needs guarding here beyond the value itself.
+        d = h.phGrid.(key).Data;
+        if isempty(evt.Indices), return; end
+        v = double(evt.NewData);
+        if ~isscalar(v) || ~isfinite(v), v = 0; end
+        d(evt.Indices(1), evt.Indices(2)) = min(max(v, 0), 1);
+        h.phGrid.(key).Data = d;
+    end
+
+    function onPhasePreset(key)
+        name = h.phPreset.(key).Value;
+        k = find(strcmp({presets.name}, name), 1);
+        if isempty(k), return; end     % the "(load preset...)" placeholder row
+        h.phGrid.(key).Data = presets(k).values;
+        if h.syncB.Value               % the lock keeps every B column the master's
+            applySyncLock();
+        end
+    end
+
+    function onPhaseScreen(key)
+        % The three R/G/B boxes are the value; the swatch below them just mirrors it.
+        h.phSw.(key).BackgroundColor = phaseScreenRGB(key);
+    end
+
+    function onPhaseSwatch(key)
+        c = uisetcolor(h.phSw.(key).BackgroundColor, 'Phase screen color');
+        if isscalar(c), return; end          % dialog cancelled
+        for ci = 1:3
+            h.phScr.(key)(ci).Value = c(ci);
+        end
+        h.phSw.(key).BackgroundColor = c;
+    end
+
+    function v = phaseScreenRGB(key)
+        v = min(max([h.phScr.(key)(1).Value, h.phScr.(key)(2).Value, h.phScr.(key)(3).Value], 0), 1);
+    end
+
+    function onCopyPhase(dst, src)
+        % Pull src's LED grid + screen color into dst (durations are NOT copied -- they
+        % define the protocol's timing, not its light).
+        h.phGrid.(dst).Data = h.phGrid.(src).Data;
+        for ci = 1:3
+            h.phScr.(dst)(ci).Value = h.phScr.(src)(ci).Value;
+        end
+        h.phSw.(dst).BackgroundColor = phaseScreenRGB(dst);
+        if h.syncB.Value, applySyncLock(); end
+    end
+
+    function onSyncB()
+        applySyncLock();
+    end
+
+    function onMasterBEdit(evt)
+        d = h.masterB.Data;
+        if ~isempty(evt.Indices)
+            v = double(evt.NewData);
+            if ~isscalar(v) || ~isfinite(v), v = 0; end
+            d(evt.Indices(1)) = min(max(v, 0), 1);
+            h.masterB.Data = d;
+        end
+        if h.syncB.Value, applySyncLock(); end
+    end
+
+    function applySyncLock()
+        % "sync and lock B channels": the master column drives every grid's B channel and
+        % the individual B columns become read-only (grayed via a column style). Off: each
+        % grid keeps whatever the master last wrote, and its B column is editable again.
+        locked = logical(h.syncB.Value);
+        onOff  = {'off', 'on'};
+        h.masterB.Enable = onOff{1 + locked};
+        for kk = {'pre', 'stim', 'post', 'iti', 'final'}
+            key = kk{1};
+            t = h.phGrid.(key);
+            removeStyle(t);
+            if locked
+                d = t.Data;
+                d(:, 3) = h.masterB.Data(:);
+                t.Data = d;
+                t.ColumnEditable = [true true false];
+                addStyle(t, uistyle('BackgroundColor', [0.90 0.90 0.90], ...
+                                    'FontColor', [0.55 0.55 0.55]), 'column', 3);
+            else
+                t.ColumnEditable = [true true true];
+            end
+        end
+    end
+
+    function ps = gatherPhaseSpec()
+        % The band as data (version 2): explicit 4x3 LED grids + screen RGB per phase,
+        % plus the B-lock state. This is exactly what is saved into experiments/state --
+        % no symbolic preset references, so a saved experiment always reproduces the
+        % light it was saved with, even if rig_config presets change later.
+        ps = struct('version', 2);
+        ps.pre   = struct('seconds', h.preStim.Value,  'rgb', phaseScreenRGB('pre'), ...
+                          'grid', local_coerce43(h.phGrid.pre.Data));
+        ps.stim  = struct('grid', local_coerce43(h.phGrid.stim.Data));
+        ps.post  = struct('seconds', h.postStim.Value, 'rgb', phaseScreenRGB('post'), ...
+                          'grid', local_coerce43(h.phGrid.post.Data));
+        ps.iti   = struct('seconds', h.itp.Value,      'rgb', phaseScreenRGB('iti'), ...
+                          'grid', local_coerce43(h.phGrid.iti.Data));
+        ps.final = struct('rgb', phaseScreenRGB('final'), ...
+                          'grid', local_coerce43(h.phGrid.final.Data));
+        ps.syncB   = logical(h.syncB.Value);
+        ps.masterB = double(h.masterB.Data(:)');
+    end
+
+    function applyPhasesToUI(spec)
+        % Fill the band from a saved spec. Handles: v2 (explicit grids), the short-lived
+        % v1 (symbolic mode/preset -- converted against today's presets), and nothing at
+        % all (defaults that reproduce the pre-overhaul behavior).
+        def = local_defaultPhaseSpec(h.preStim.Value, h.postStim.Value, h.itp.Value);
+        % The stimulus grid's default is what applyLedsToUI just loaded (opts.leds), NOT
+        % zeros -- otherwise a pre-band experiment file would wipe its LED grid on load,
+        % and a v1 spec's "(main grid)" phases would convert to darkness.
+        def.stim.grid = local_coerce43(h.phGrid.stim.Data);
+        spec = local_normalizePhaseSpec(spec, presets, def);
+        h.preStim.Value  = spec.pre.seconds;
+        h.postStim.Value = spec.post.seconds;
+        h.itp.Value      = spec.iti.seconds;
+        h.phGrid.stim.Data = spec.stim.grid;
+        for kk = {'pre', 'post', 'iti', 'final'}
+            key = kk{1};
+            h.phGrid.(key).Data = spec.(key).grid;
+            v = spec.(key).rgb;
+            for ci = 1:3
+                h.phScr.(key)(ci).Value = v(ci);
+            end
+            h.phSw.(key).BackgroundColor = v;
+        end
+        h.masterB.Data = spec.masterB(:);
+        h.syncB.Value  = logical(spec.syncB);
+        applySyncLock();
+    end
+
+    % ================= Quick load: 10 assignable experiment slots =================
+    function onQuickLoad()
+        r = h.qlGroup.SelectedObject;
+        if isempty(r) || r == h.qlNone, return; end
+        i = r.UserData;
+        if isempty(qlSlots(i).file)
+            h.qlGroup.SelectedObject = h.qlNone;
+            uialert(h.fig, sprintf(['Slot %d is empty. Use "Assign slot..." to bind a saved ' ...
+                'experiment to it.'], i), 'Empty slot');
+            return;
+        end
+        p = local_slotPath(expDir, qlSlots(i).file);
+        if ~exist(p, 'file')
+            h.qlGroup.SelectedObject = h.qlNone;
+            uialert(h.fig, sprintf('Slot %d points at "%s", which no longer exists.', i, p), ...
+                'Missing file');
+            return;
+        end
+        loadExperimentFile(p);
+    end
+
+    function refreshQuickUI()
+        for i = 1:10
+            h.qlRadio(i).Text = local_quickLabel(i, qlSlots(i));
+        end
+    end
+
+    function onAssignSlot()
+        % Small modal chooser: which slot, what name, and where the experiment comes from
+        % (the protocol as it stands, or an existing saved .json). Also clears a slot.
+        selIdx = find(cellfun(@isempty, {qlSlots.file}), 1);
+        if isempty(selIdx), selIdx = 1; end
+        if ~isempty(h.qlGroup.SelectedObject), selIdx = h.qlGroup.SelectedObject.UserData; end
+
+        pp  = h.fig.Position;
+        d   = uifigure('Name', 'Assign quick-load slot', 'Resize', 'off', ...
+                       'Position', [pp(1) + 320, pp(2) + 380, 470, 235]);
+        g   = uigridlayout(d, [5 2]);
+        g.RowHeight   = {'fit', 'fit', 'fit', 'fit', 'fit'};
+        g.ColumnWidth = {110, '1x'};
+        uilabel(g, 'Text', 'Slot:');
+        slotItems = arrayfun(@(i) local_quickLabel(i, qlSlots(i)), 1:10, 'UniformOutput', false);
+        sd = uidropdown(g, 'Items', slotItems, 'ItemsData', 1:10, 'Value', selIdx);
+        uilabel(g, 'Text', 'Name:');
+        nf = uieditfield(g, 'text', 'Value', qlSlots(selIdx).name, ...
+            'Tooltip', 'Shown on the slot''s button. Blank = the experiment file''s name.');
+        hint = uilabel(g, 'Text', ['"Bind current protocol" saves what is in the table now as a ' ...
+            '.json under experiments/ and points the slot at it. "Bind existing file..." points ' ...
+            'the slot at an experiment you already saved.'], 'WordWrap', 'on', ...
+            'FontAngle', 'italic', 'FontColor', [0.45 0.45 0.45]);
+        hint.Layout.Column = [1 2];
+        b1 = uibutton(g, 'Text', 'Bind current protocol', 'ButtonPushedFcn', @(s, e) doBindCurrent(), ...
+            'BackgroundColor', [0.20 0.55 0.30], 'FontColor', 'w', 'FontWeight', 'bold');
+        b1.Layout.Column = 1;
+        b2 = uibutton(g, 'Text', 'Bind existing file...', 'ButtonPushedFcn', @(s, e) doBindExisting());
+        b2.Layout.Column = 2;
+        b3 = uibutton(g, 'Text', 'Clear slot', 'ButtonPushedFcn', @(s, e) doClear());
+        b3.Layout.Column = 1;
+        b4 = uibutton(g, 'Text', 'Cancel', 'ButtonPushedFcn', @(s, e) delete(d));
+        b4.Layout.Column = 2;
+
+        function doBindCurrent()
+            if isempty(blocks)
+                uialert(d, 'The protocol table is empty -- add epochs first.', 'Nothing to bind');
+                return;
+            end
+            i  = sd.Value;
+            nm = strtrim(char(nf.Value));
+            if isempty(nm), nm = sprintf('quick slot %d', i); end
+            file = [local_safeFileName(nm) '.json'];
+            full = fullfile(expDir, file);
+            if exist(full, 'file')
+                choice = uiconfirm(d, sprintf('"%s" already exists. Overwrite it?', file), ...
+                    'Overwrite', 'Options', {'Cancel', 'Overwrite'}, 'DefaultOption', 1, 'CancelOption', 1);
+                if ~strcmp(choice, 'Overwrite'), return; end
+            end
+            fid = fopen(full, 'w');
+            if fid < 0
+                uialert(d, ['Cannot write ' full], 'Save failed');
+                return;
+            end
+            fwrite(fid, local_experimentToJson(blocks, gatherOpts()), 'char');
+            fclose(fid);
+            commitSlot(i, nm, file);
+        end
+
+        function doBindExisting()
+            [f, p] = uigetfile('*.json', 'Choose a saved experiment', [expDir filesep]);
+            if isequal(f, 0), return; end
+            i  = sd.Value;
+            nm = strtrim(char(nf.Value));
+            if isempty(nm), [~, nm] = fileparts(f); end
+            if strcmp(local_stripSep(p), local_stripSep(expDir))
+                file = f;                    % keep experiments/ slots portable
+            else
+                file = fullfile(p, f);
+            end
+            commitSlot(i, nm, file);
+        end
+
+        function doClear()
+            i = sd.Value;
+            qlSlots(i).name = '';
+            qlSlots(i).file = '';
+            local_saveQuickSlots(qlFile, qlSlots);
+            refreshQuickUI();
+            if ~isempty(h.qlGroup.SelectedObject) && h.qlGroup.SelectedObject.UserData == i
+                h.qlGroup.SelectedObject = h.qlNone;
+            end
+            delete(d);
+        end
+
+        function commitSlot(i, nm, file)
+            qlSlots(i).name = nm;
+            qlSlots(i).file = file;
+            local_saveQuickSlots(qlFile, qlSlots);
+            refreshQuickUI();
+            delete(d);
         end
     end
 
@@ -439,8 +980,45 @@ function stimulusGUI(mode)
                 return;
             end
         end
+        opts = gatherOpts();
+        % ---- every Gaussian epoch should have its OWN seed: warn about duplicates ----
+        allSeeds = [blocks.seeds];
+        allSeeds = allSeeds(isfinite(allSeeds));
+        if numel(unique(allSeeds)) < numel(allSeeds)
+            choice = uiconfirm(h.fig, ['Two or more epochs share the same seed, so their ' ...
+                'noise will be IDENTICAL, not independent. Run anyway?'], 'Duplicate seeds', ...
+                'Options', {'Cancel', 'Run anyway'}, 'DefaultOption', 1, 'CancelOption', 1);
+            if ~strcmp(choice, 'Run anyway'), return; end
+        end
+        % ---- resolve the band + write this run's generated stimulus script ----
+        % Run never calls the AA* files: it generates ONE m-file per stimulus type in the
+        % protocol (normally exactly one) that renders pre-stim + stimulus + post-stim as a
+        % single presentation with the configured screens/LED grids, and executes that. The
+        % file lands in <data dir>/generated_stimuli/ as the exact record of what ran.
+        phRun = local_resolvePhaseSpec(opts.phases);
+        if opts.leds.enabled
+            stimGrid = local_coerce43(opts.leds.intensity);
+        else
+            stimGrid = [];
+        end
+        genDir = fullfile(pwd, 'generated_stimuli');
+        genMap = struct();
+        try
+            uf = unique({blocks.fnName});
+            for gi = 1:numel(uf)
+                genMap.(uf{gi}) = generateStimScript(local_findEntry(reg, uf{gi}), ...
+                                                     phRun, stimGrid, genDir);
+            end
+        catch err
+            uialert(h.fig, sprintf('Could not write the generated stimulus script:\n%s', ...
+                err.message), 'Generate failed');
+            return;
+        end
         protocol = local_buildProtocol(reg, blocks);
-        opts     = gatherOpts();
+        for bi = 1:numel(protocol)
+            protocol(bi).stim = str2func(genMap.(blocks(bi).fnName));
+        end
+        opts.phases   = phRun;                             % resolved grids + .rendered=true
         opts.cellName = strtrim(char(h.cellName.Value));   % patched cell -> nested manifest (Run only)
         opts.onProtocolComplete = @onProtocolComplete;     % ONE dialog, at the end of the run
         % Cancel hook: runExperiment polls this between epochs and inside its waits, so a
@@ -456,10 +1034,9 @@ function stimulusGUI(mode)
             % quick-set values persist untouched through the run.)
             releaseQuickRig();
         end
-        % Live monitor: runExperiment and playAndLogTrial publish through stimProgress, the
-        % monitor draws, and its Cancel routes straight back to onCancel below. The hooks
-        % stay attached after the run -- the window keeps previewing the protocol.
-        if h.showMonitor.Value, openMonitor(); end
+        % The embedded monitor: runExperiment and playAndLogTrial publish through
+        % stimProgress and it draws. Re-attach in case the hooks were ever dropped.
+        openMonitor();
         setRunning(true);
         % Held only for its destructor: re-enables the UI on ANY exit (finish, error, Ctrl-C).
         restoreButtons = onCleanup(@() setRunning(false));
@@ -533,20 +1110,19 @@ function stimulusGUI(mode)
     end
 
     function openMonitor()
-        if isempty(monitor) || ~isfield(monitor, 'fig') || ~isvalid(monitor.fig)
-            monitor = stimulusMonitor(h.fig);
+        % The Session monitor lives INSIDE this window (right panel) -- one window, and
+        % the main Cancel button is the only Cancel. Built once, at startup; the hooks
+        % live as long as the window does, so the timeline previews the protocol while
+        % you are still building it.
+        if isempty(monitor)
+            monitor = stimulusMonitor(h.monPanel);
         end
-        % Hooks live as long as the WINDOW does, not just as long as a run -- that is what
-        % lets the timeline preview the protocol while you are still building it.
         stimProgress('attach', @(kind, msg) monitor.update(kind, msg), @onCancel);
     end
 
     function closeMonitor()
         stimProgress('detach');
-        if ~isempty(monitor) && isfield(monitor, 'fig') && isvalid(monitor.fig)
-            delete(monitor.fig);
-        end
-        monitor = [];
+        monitor = [];    % its widgets die with the window; nothing separate to delete
     end
 
     function newCell = onProtocolComplete(nBlocks, nEpochs, cellName)
@@ -589,14 +1165,20 @@ function stimulusGUI(mode)
     function onLoad()
         [f, p] = uigetfile('*.json', 'Load experiment', [expDir filesep]);
         if isequal(f, 0), return; end
+        h.qlGroup.SelectedObject = h.qlNone;   % loaded by hand -> no quick-load slot is "current"
+        loadExperimentFile(fullfile(p, f));
+    end
+
+    function loadExperimentFile(fp)
+        % Load one saved experiment (Load... button and the quick-load slots share this).
         try
-            [blocks, o] = local_jsonToExperiment(reg, fileread(fullfile(p, f)));
+            [blocks, o] = local_jsonToExperiment(reg, fileread(fp));
             h.preStim.Value  = getfielddef(o, 'preStim', 2);
             h.postStim.Value = getfielddef(o, 'postStim', 1);
             h.itp.Value      = getfielddef(o, 'itp', 3);
-            h.seedBase.Value = getfielddef(o, 'seedBase', 2);
             if isfield(o, 'triggerAcq'), h.triggerAcq.Value = logical(o.triggerAcq); end
             applyLedsToUI(getfielddef(o, 'leds', struct()));
+            applyPhasesToUI(getfielddef(o, 'phases', []));   % after the flat fields: it wins
             refreshProtocol();
             % Point the stimulus list at what was just loaded, so the parameter table matches
             % the protocol and "Add block" extends it instead of tripping the one-stimulus rule.
@@ -618,8 +1200,13 @@ function stimulusGUI(mode)
     function refreshProtocol(keepRow)
         % keepRow: re-select this epoch after the rebuild, so editing does not lose your place.
         % Guarded, because setting Selection can re-enter onSelectEpoch and clobber the top
-        % window with the block's stored values.
+        % window with the block's stored values. The columns are rebuilt to match the
+        % protocol's stimulus type: Label + seed + one column per parameter, all editable.
         if nargin < 1, keepRow = []; end
+        [cols, widths, editable] = local_epochTableSpec(reg, blocks);
+        h.protoTable.ColumnName     = cols;
+        h.protoTable.ColumnWidth    = widths;
+        h.protoTable.ColumnEditable = editable;
         h.protoTable.Data = local_epochRows(reg, blocks);
         h.protoNote.Text  = local_protoSummary(blocks);
         updateTableButtons();
@@ -636,10 +1223,14 @@ function stimulusGUI(mode)
     function o = gatherOpts()
         % The two checkboxes map straight through: triggerAcq -> Clampex acquisition,
         % o.leds.enabled -> LED driver (set in gatherLeds). Unchecked = Run skips it.
+        % o.phases is the band's data (v2: explicit grids + screen colors). The flat
+        % preStim/postStim/itp mirror the phase durations for the monitor plan and for
+        % older experiment files. (seedBase is gone: every epoch carries its own seed in
+        % the protocol table.)
         o = struct('preStim', h.preStim.Value, 'postStim', h.postStim.Value, ...
-                   'itp', h.itp.Value, 'seedBase', round(h.seedBase.Value), ...
-                   'triggerAcq', logical(h.triggerAcq.Value));
-        o.leds = gatherLeds();
+                   'itp', h.itp.Value, 'triggerAcq', logical(h.triggerAcq.Value));
+        o.leds   = gatherLeds();
+        o.phases = gatherPhaseSpec();
     end
 
     % ----- remember the last-used session across GUI opens (in prefdir, not the repo) -----
@@ -666,10 +1257,10 @@ function stimulusGUI(mode)
     function saveState()
         try
             o = struct('preStim', h.preStim.Value, 'postStim', h.postStim.Value, ...
-                       'itp', h.itp.Value, 'seedBase', round(h.seedBase.Value), ...
-                       'triggerAcq', logical(h.triggerAcq.Value), ...
+                       'itp', h.itp.Value, 'triggerAcq', logical(h.triggerAcq.Value), ...
                        'stimIndex', h.list.ValueIndex);
-            o.leds = gatherLeds();
+            o.leds   = gatherLeds();
+            o.phases = gatherPhaseSpec();
             fid = fopen(stateFile, 'w');
             if fid > 0
                 fwrite(fid, local_experimentToJson(blocks, o), 'char');
@@ -690,9 +1281,9 @@ function stimulusGUI(mode)
         h.preStim.Value    = getfielddef(o, 'preStim', 2);
         h.postStim.Value   = getfielddef(o, 'postStim', 1);
         h.itp.Value        = getfielddef(o, 'itp', 3);
-        h.seedBase.Value   = getfielddef(o, 'seedBase', 2);
         h.triggerAcq.Value = logical(getfielddef(o, 'triggerAcq', true));
         applyLedsToUI(getfielddef(o, 'leds', struct()));
+        applyPhasesToUI(getfielddef(o, 'phases', []));
         si = round(getfielddef(o, 'stimIndex', 1));
         if si >= 1 && si <= numel(reg), h.list.ValueIndex = si; onSelectStim(); end
         blocks = blk;
@@ -704,13 +1295,6 @@ function stimulusGUI(mode)
                       'port', char(h.ledPort.Value), ...
                       'mode', double(h.ledMode.Value), ...
                       'intensity', local_coerce43(h.ledGrid.Data));   % runExperiment applies this grid
-    end
-
-    function onPreset()
-        name = h.ledPreset.Value;
-        k = find(strcmp({presets.name}, name), 1);
-        if isempty(k), return; end     % the "(load preset...)" placeholder row
-        h.ledGrid.Data = presets(k).values;
     end
 
     function applyLedsToUI(L)
@@ -921,14 +1505,26 @@ end
 
 % ===================== pure logic (shared by the GUI and the self-test) =====================
 function b = local_emptyBlocks()
-    b = struct('stimName', {}, 'fnName', {}, 'params', {}, 'epochs', {}, 'label', {});
+% .seeds: one seed per epoch for seeded stimuli ([] otherwise) -- every Gaussian epoch has
+% its OWN seed, shown and editable in the protocol table and recorded per epoch in the
+% manifest (and the values CSV).
+    b = struct('stimName', {}, 'fnName', {}, 'params', {}, 'epochs', {}, 'label', {}, 'seeds', {});
 end
 
-function t = local_ledTable(parent)
-    t = uitable(parent, 'Data', zeros(4, 3), 'ColumnName', {'R', 'G', 'B'}, ...
-        'RowName', {'LED 0', 'LED 1', 'LED 2', 'LED 3'}, 'ColumnEditable', [true true true], ...
-        'ColumnWidth', {52, 52, 52}, ...
-        'Tooltip', 'Per-LED intensity (0..1 linear duty; pre-distort like lcGammaCorrect for eye-linear).');
+function s = local_nextSeeds(blocks, n, seeded)
+% n fresh seeds, continuing past the highest seed anywhere in the protocol so every epoch
+% is an INDEPENDENT noise realization. An empty protocol starts at 2 (the long-standing
+% default first seed). Pass seeded=false (a stimulus with no seed argument) to get [].
+    if nargin >= 3 && ~seeded
+        s = [];
+        return;
+    end
+    mx = 1;
+    for b = 1:numel(blocks)
+        sd = getfielddef(blocks(b), 'seeds', []);
+        if ~isempty(sd), mx = max(mx, max(sd)); end
+    end
+    s = mx + (1:n);
 end
 
 function m = local_coerce43(v)
@@ -953,6 +1549,226 @@ end
 function items = local_presetNames(presets)
     names = arrayfun(@(p) char(string(p.name)), presets(:)', 'UniformOutput', false);
     items = [{'(load preset...)'}, names];
+end
+
+
+% ---------- startup-state probes (bounded; GUI launch must never hang) ----------
+
+function tf = local_portOpen(host, port, timeoutMs)
+% Is anything listening? A raw java TCP connect with a HARD timeout -- unlike
+% netbox.Connection, whose connect can take ~10 s against an unreachable host, this
+% answers within timeoutMs even off the rig network.
+    tf = false;
+    try
+        s = java.net.Socket();
+        s.connect(java.net.InetSocketAddress(host, port), timeoutMs);
+        s.close();
+        tf = true;
+    catch
+    end
+end
+
+function [tf, cv] = local_stageAnswers(host, port, budgetS)
+% Bounded liveness probe (a small, cancel-free version of runExperiment's pre-flight):
+% connect, ask for the canvas size, poll the reply in slices. A server that accepts but
+% never answers (still starting, wedged, another client attached) fails within budgetS
+% instead of hanging the GUI in netbox's unbounded read. Disconnects either way, so the
+% single-client server is left free. cv = the canvas size from the reply ([] if unknown).
+    tf   = false;
+    cv   = [];
+    conn = [];
+    try
+        conn = netbox.Connection(host, port);
+        conn.setReceiveTimeout(150);
+        conn.sendEvent(netbox.NetEvent('getCanvasSize'));
+        t0 = tic;
+        while toc(t0) < budgetS
+            try
+                msg = conn.receiveMessage();
+                tf  = true;
+                try
+                    if strcmp(char(msg.name), 'ok') && ~isempty(msg.arguments)
+                        cv = double(msg.arguments{1});
+                        cv = cv(:)';
+                    end
+                catch
+                end
+                break;
+            catch e
+                if ~strcmp(e.identifier, 'Connection:ReceiveTimeout'), break; end
+                pause(0.03);
+            end
+        end
+    catch
+    end
+    if ~isempty(conn)
+        try
+            conn.disconnect();
+        catch
+        end
+    end
+end
+
+function v = local_coerceRGB(x)
+% rig_config startup_screen_rgb (possibly a jsondecode column, possibly junk) -> [r g b].
+    v = [0 0 0];
+    if isnumeric(x)
+        x = double(x(:)');
+        if numel(x) == 3 && all(isfinite(x)), v = min(max(x, 0), 1); end
+    end
+end
+
+
+% ---------- screens-&-LEDs band: the phase spec (v2 -- explicit grids + colors) ----------
+
+function d = local_defaultPhaseSpec(preS, postS, itiS)
+% The spec that reproduces the pre-overhaul behavior: black screens, every phase grid
+% dark, all-dark end state (= the classic dark + close teardown).
+    d = struct('version', 2, ...
+        'pre',   struct('seconds', preS,  'rgb', [0 0 0], 'grid', zeros(4, 3)), ...
+        'stim',  struct('grid', zeros(4, 3)), ...
+        'post',  struct('seconds', postS, 'rgb', [0 0 0], 'grid', zeros(4, 3)), ...
+        'iti',   struct('seconds', itiS,  'rgb', [0 0 0], 'grid', zeros(4, 3)), ...
+        'final', struct('rgb', [0 0 0], 'grid', zeros(4, 3)));
+    d.syncB   = false;
+    d.masterB = zeros(1, 4);
+end
+
+function spec = local_normalizePhaseSpec(spec, presets, def)
+% Overlay a saved spec onto the defaults, tolerating jsondecode's shapes (columns for
+% vectors) and both generations of the format: v2 stores explicit 4x3 grids + screen RGB
+% per phase; the short-lived v1 stored a symbolic LED choice ({mode, preset}) per phase --
+% converted here against today's presets ('main' = the default's stimulus grid).
+    out = def;
+    if ~isstruct(spec), spec = struct(); end
+    isV1 = isfield(spec, 'pre') && isstruct(spec.pre) && isfield(spec.pre, 'leds');
+    for kk = {'pre', 'stim', 'post', 'iti', 'final'}
+        key = kk{1};
+        if ~isfield(spec, key) || ~isstruct(spec.(key)), continue; end
+        src = spec.(key);
+        dst = out.(key);
+        if isfield(dst, 'seconds') && isfield(src, 'seconds')
+            s = double(src.seconds);
+            if isscalar(s) && isfinite(s) && s >= 0, dst.seconds = s; end
+        end
+        if isfield(dst, 'rgb') && isfield(src, 'rgb')
+            v = double(reshape(src.rgb, 1, []));
+            if numel(v) == 3 && all(isfinite(v)), dst.rgb = min(max(v, 0), 1); end
+        end
+        if isfield(src, 'grid')
+            dst.grid = local_coerce43(src.grid);
+        elseif isV1 && isfield(src, 'leds')
+            dst.grid = local_v1Grid(src.leds, presets, out.stim.grid);
+        end
+        out.(key) = dst;
+    end
+    if isfield(spec, 'syncB') && ~isempty(spec.syncB)
+        v = spec.syncB;
+        if islogical(v) || isnumeric(v)          % jsondecode gives a logical; never
+            out.syncB = logical(v(1));           % string-convert it (string(false) is
+        end                                      % 'false' -> str2double NaN -> "true")
+    end
+    if isfield(spec, 'masterB')
+        m = double(reshape(spec.masterB, 1, []));
+        if numel(m) == 4 && all(isfinite(m)), out.masterB = min(max(m, 0), 1); end
+    end
+    spec = out;
+end
+
+function g = local_v1Grid(ls, presets, mainGrid)
+% v1 symbolic LED choice -> a concrete grid: '(main grid)' = the stimulus grid, 'off' =
+% all dark, a preset = its current rig_config values (a vanished preset -> dark).
+    g = zeros(4, 3);
+    mode = char(string(getfielddef(ls, 'mode', 'main')));
+    switch mode
+        case 'main'
+            g = mainGrid;
+        case 'preset'
+            k = find(strcmp({presets.name}, char(string(getfielddef(ls, 'preset', '')))), 1);
+            if ~isempty(k), g = presets(k).values; end
+    end
+end
+
+function phases = local_resolvePhaseSpec(spec)
+% Band spec (v2) -> the plan runExperiment/generateStimScript consume: per phase
+% {seconds, rgb, ledGrid} plus .rendered = true. An ALL-DARK "end of stim" grid means the
+% classic teardown (dark + close the driver); any lit value there is applied and left
+% RUNNING after the run (the driver is handed off as base-workspace `rig`).
+    phases = struct('rendered', true);
+    phases.pre  = struct('seconds', spec.pre.seconds,  'rgb', spec.pre.rgb,  'ledGrid', spec.pre.grid);
+    phases.post = struct('seconds', spec.post.seconds, 'rgb', spec.post.rgb, 'ledGrid', spec.post.grid);
+    phases.iti  = struct('seconds', spec.iti.seconds,  'rgb', spec.iti.rgb,  'ledGrid', spec.iti.grid);
+    g = spec.final.grid;
+    if ~any(g(:)), g = []; end
+    phases.final = struct('rgb', spec.final.rgb, 'ledGrid', g);
+end
+
+
+% ---------- Quick load: 10 assignable experiment slots ----------
+
+function s = local_loadQuickSlots(file)
+% experiments/quickload_slots.json -> 1x10 struct('name','file'). Missing/corrupt file or
+% short slot list -> empty slots (never an error at GUI startup).
+    s = repmat(struct('name', '', 'file', ''), 1, 10);
+    try
+        if ~exist(file, 'file'), return; end
+        raw   = jsondecode(fileread(file));
+        items = local_asCell(getfielddef(raw, 'slots', {}));
+        for i = 1:min(10, numel(items))
+            r = items{i};
+            if isstruct(r)
+                s(i).name = char(string(getfielddef(r, 'name', '')));
+                s(i).file = char(string(getfielddef(r, 'file', '')));
+            end
+        end
+    catch
+    end
+end
+
+function local_saveQuickSlots(file, slots)
+    doc = struct('format', 'neitz-quickload/1');
+    doc.slots = arrayfun(@(x) struct('name', x.name, 'file', x.file), slots(:)', ...
+                         'UniformOutput', false);
+    fid = fopen(file, 'w');
+    if fid < 0
+        error('stimulusGUI:quickSave', 'Cannot write %s', file);
+    end
+    fwrite(fid, jsonencode(doc, 'PrettyPrint', true), 'char');
+    fclose(fid);
+end
+
+function t = local_quickLabel(i, slot)
+    if isempty(slot.file)
+        nm = '(empty)';
+    else
+        nm = slot.name;
+        if isempty(nm), [~, nm] = fileparts(slot.file); end
+    end
+    t = sprintf('%d:  %s', i, nm);
+end
+
+function p = local_slotPath(expDir, file)
+% Slot files saved under experiments/ are stored relative (portable across machines);
+% anything else is an absolute path used as-is.
+    if isempty(fileparts(file))
+        p = fullfile(expDir, file);
+    else
+        p = file;
+    end
+end
+
+function s = local_stripSep(p)
+    s = char(p);
+    while ~isempty(s) && (s(end) == '/' || s(end) == '\')
+        s = s(1:end-1);
+    end
+end
+
+function f = local_safeFileName(name)
+% A filesystem-safe stem for "Bind current protocol": keep word characters and dashes,
+% everything else becomes '_'.
+    f = regexprep(char(string(name)), '[^\w\-]', '_');
+    if isempty(f), f = 'experiment'; end
 end
 
 function idx = local_editableParams(entry)
@@ -1083,19 +1899,134 @@ end
 
 % ---------- protocol table: one row per EPOCH (blocks are the run-time grouping) ----------
 
-function rows = local_epochRows(reg, blocks)
-% Expand the blocks into one display row per epoch: {epochNo, stimulus, label, params}.
-% Epoch numbers are global across the protocol, matching the order runExperiment presents
-% them (and therefore the order Clampex saves the .abf files).
-    rows = cell(0, 4);
-    n    = 0;
-    for b = 1:numel(blocks)
-        e = local_findEntry(reg, blocks(b).fnName);
-        s = local_paramSummary(e, blocks(b).params);
-        for k = 1:blocks(b).epochs
-            n = n + 1;
-            rows(n, :) = {n, blocks(b).stimName, blocks(b).label, s};
+function [cols, widths, editable, keys] = local_epochTableSpec(reg, blocks)
+% Columns for the protocol table. A (normal) single-stimulus protocol gets one EDITABLE
+% column per thing an epoch owns: Label, its seed (seeded stimuli), and every parameter in
+% registry order. `keys` says what an edit to each column means: 'epoch' (read-only
+% number), 'label', 'seed', or 'p:<paramName>'. A legacy mixed-stimulus protocol falls
+% back to the old read-only overview ('readonly' keys).
+    if ~isempty(blocks) && ~local_mixedStims(blocks)
+        e   = local_findEntry(reg, blocks(1).fnName);
+        idx = local_editableParams(e);
+        cols     = {'Epoch #', 'Label'};
+        widths   = {52, 96};
+        keys     = {'epoch', 'label'};
+        editable = [false, true];
+        if local_seedArgFor(e) > 0
+            cols{end+1} = 'seed';  widths{end+1} = 48;
+            keys{end+1} = 'seed';  editable(end+1) = true;
         end
+        for k = idx
+            cols{end+1} = e.params{k, 1};                               %#ok<AGROW>
+            keys{end+1} = ['p:' e.params{k, 1}];                        %#ok<AGROW>
+            editable(end+1) = true;                                     %#ok<AGROW>
+            switch e.params{k, 3}
+                case 'vec2', widths{end+1} = 76;                        %#ok<AGROW>
+                case 'enum', widths{end+1} = 118;                       %#ok<AGROW>
+                otherwise,   widths{end+1} = 68;                        %#ok<AGROW>
+            end
+        end
+    else
+        cols     = {'Epoch #', 'Stimulus', 'Label', 'Params'};
+        widths   = {52, 220, 110, '1x'};
+        keys     = {'epoch', 'readonly', 'readonly', 'readonly'};
+        editable = [false, false, false, false];
+    end
+end
+
+function rows = local_epochRows(reg, blocks)
+% Expand the blocks into one display row per epoch, matching local_epochTableSpec's
+% columns. Epoch numbers are global across the protocol, matching the order runExperiment
+% presents them (and therefore the order Clampex saves the .abf files). Numeric parameters
+% are numbers (so typing in a cell edits a number), vec2/enum are text.
+    if isempty(blocks)
+        rows = cell(0, 2);
+        return;
+    end
+    if local_mixedStims(blocks)
+        rows = cell(0, 4);
+        n    = 0;
+        for b = 1:numel(blocks)
+            e = local_findEntry(reg, blocks(b).fnName);
+            s = local_paramSummary(e, blocks(b).params);
+            for k = 1:blocks(b).epochs
+                n = n + 1;
+                rows(n, :) = {n, blocks(b).stimName, blocks(b).label, s};
+            end
+        end
+        return;
+    end
+    e      = local_findEntry(reg, blocks(1).fnName);
+    idx    = local_editableParams(e);
+    seeded = local_seedArgFor(e) > 0;
+    flat   = local_flattenEpochs(blocks);
+    rows   = cell(numel(flat), 2 + double(seeded) + numel(idx));
+    % Every cell is TEXT: a uifigure uitable renders raw doubles in a cell array as
+    % "600.0000", which is unreadable for frame counts and seeds. Edits come back as
+    % text and are parsed by local_applyCellEdit either way.
+    for i = 1:numel(flat)
+        rows{i, 1} = sprintf('%d', i);
+        rows{i, 2} = char(flat(i).label);
+        c = 3;
+        if seeded
+            rows{i, c} = local_valueStr('num', flat(i).seed);
+            c = c + 1;
+        end
+        for k = idx
+            name = e.params{k, 1};
+            if isfield(flat(i).params, name), v = flat(i).params.(name); else, v = e.params{k, 2}; end
+            rows{i, c} = local_valueStr(e.params{k, 3}, v);
+            c = c + 1;
+        end
+    end
+end
+
+function blocks = local_applyCellEdit(reg, blocks, row, key, newVal)
+% One typed cell -> one epoch changed. The epoch is flattened out, the field rewritten,
+% and runs of identical neighbours re-collapsed into blocks -- so editing a middle epoch
+% splits its block, and editing it back re-merges. Throws (uialert-ready) on bad input.
+    if local_mixedStims(blocks)
+        error('stimulusGUI:mixedEdit', ['This legacy mixed-stimulus protocol is read-only ' ...
+              'in the table. Rebuild it as single-stimulus protocols to edit epochs.']);
+    end
+    flat = local_flattenEpochs(blocks);
+    if row < 1 || row > numel(flat), return; end
+    e = local_findEntry(reg, blocks(1).fnName);
+    switch key
+        case 'label'
+            flat(row).label = char(string(newVal));
+        case 'seed'
+            v = local_numFrom(newVal);
+            if ~isscalar(v) || ~isfinite(v) || v < 0
+                error('stimulusGUI:badSeed', 'seed must be a number >= 0 (got "%s").', ...
+                      char(string(newVal)));
+            end
+            flat(row).seed = round(v);
+        otherwise                                   % 'p:<paramName>'
+            name = key(3:end);
+            r = find(strcmp(e.params(:, 1), name), 1);
+            if isempty(r)
+                error('stimulusGUI:unknownParam', '"%s" is not an argument of %s.', name, e.fn);
+            end
+            typ = e.params{r, 3};
+            if strcmp(typ, 'num') && isnumeric(newVal) && isscalar(newVal)
+                if ~isfinite(newVal)
+                    error('stimulusGUI:badNum', 'Parameter "%s" must be a number.', name);
+                end
+                v = double(newVal);
+            else
+                v = local_parseValue(typ, char(string(newVal)), e, name);
+            end
+            flat(row).params.(name) = v;
+    end
+    blocks = local_collapseEpochs(flat);
+end
+
+function v = local_numFrom(x)
+    if isnumeric(x) && isscalar(x)
+        v = double(x);
+    else
+        v = str2double(char(string(x)));
     end
 end
 
@@ -1110,9 +2041,18 @@ function b = local_blockOfEpoch(blocks, row)
 end
 
 function blocks = local_removeEpoch(blocks, row)
-% Drop one epoch from the block owning `row`; drop the block when its last epoch goes.
+% Drop one epoch from the block owning `row` -- including ITS seed, so the remaining
+% epochs keep the seeds they already had; drop the block when its last epoch goes.
     b = local_blockOfEpoch(blocks, row);
     if b == 0, return; end
+    nBefore = 0;
+    for i = 1:b-1
+        nBefore = nBefore + blocks(i).epochs;
+    end
+    k = row - nBefore;
+    if k >= 1 && k <= numel(blocks(b).seeds)
+        blocks(b).seeds(k) = [];
+    end
     blocks(b).epochs = blocks(b).epochs - 1;
     if blocks(b).epochs < 1, blocks(b) = []; end
 end
@@ -1138,28 +2078,37 @@ function blocks = local_applyToEpochs(blocks, rows, ps, label)
 end
 
 function flat = local_flattenEpochs(blocks)
-% One struct per epoch, in display order.
-    flat = struct('stimName', {}, 'fnName', {}, 'params', {}, 'label', {});
+% One struct per epoch, in display order, carrying that epoch's own seed (NaN = the
+% stimulus takes no seed).
+    flat = struct('stimName', {}, 'fnName', {}, 'params', {}, 'label', {}, 'seed', {});
     for b = 1:numel(blocks)
+        seeds = getfielddef(blocks(b), 'seeds', []);
         for k = 1:blocks(b).epochs
+            if k <= numel(seeds), sd = seeds(k); else, sd = NaN; end
             flat(end + 1) = struct('stimName', blocks(b).stimName, 'fnName', blocks(b).fnName, ...
-                                   'params', blocks(b).params, 'label', blocks(b).label); %#ok<AGROW>
+                                   'params', blocks(b).params, 'label', blocks(b).label, ...
+                                   'seed', sd); %#ok<AGROW>
         end
     end
 end
 
 function blocks = local_collapseEpochs(flat)
 % Inverse of local_flattenEpochs: consecutive epochs that agree on stimulus, parameters and
-% label become one block again.
+% label become one block again. Seeds are PER EPOCH, so they never split a block -- they
+% ride along in the block's .seeds vector, in epoch order.
     blocks = local_emptyBlocks();
     for i = 1:numel(flat)
         f = flat(i);
         if ~isempty(blocks) && strcmp(blocks(end).fnName, f.fnName) && ...
                 isequal(blocks(end).params, f.params) && strcmp(blocks(end).label, f.label)
             blocks(end).epochs = blocks(end).epochs + 1;
+            if isfinite(f.seed), blocks(end).seeds(end + 1) = f.seed; end
         else
+            sd = [];
+            if isfinite(f.seed), sd = f.seed; end
             blocks(end + 1) = struct('stimName', f.stimName, 'fnName', f.fnName, ...
-                                     'params', f.params, 'epochs', 1, 'label', f.label); %#ok<AGROW>
+                                     'params', f.params, 'epochs', 1, 'label', f.label, ...
+                                     'seeds', sd); %#ok<AGROW>
         end
     end
 end
@@ -1188,12 +2137,23 @@ function plan = local_previewPlan(reg, blocks, opts, cellName)
 end
 
 function blocks = local_updateBlocks(blocks, target, ps, label, epochs)
-% Rewrite the parameters, label and epoch count of the given block indices in place. Used by
-% "Update epochs": the epochs already in the table change, none are appended.
+% Rewrite the parameters, label and epoch count of the given block indices in place. Used
+% by "Update epochs": the epochs already in the table change, none are appended. Existing
+% per-epoch seeds are KEPT; shrinking trims from the end, growing appends fresh seeds.
     for i = reshape(target, 1, [])
         blocks(i).params = ps;
         blocks(i).label  = char(label);
-        blocks(i).epochs = max(1, round(epochs));
+        n = max(1, round(epochs));
+        s = blocks(i).seeds;
+        if ~isempty(s)
+            if n < numel(s)
+                s = s(1:n);
+            elseif n > numel(s)
+                s = [s, local_nextSeeds(blocks, n - numel(s))];         %#ok<AGROW>
+            end
+        end
+        blocks(i).seeds  = s;
+        blocks(i).epochs = n;
     end
 end
 
@@ -1284,7 +2244,7 @@ function e = local_findEntry(reg, fnName)
 end
 
 function protocol = local_buildProtocol(reg, blocks)
-    protocol = struct('stim', {}, 'args', {}, 'epochs', {}, 'label', {}, 'seedArg', {});
+    protocol = struct('stim', {}, 'args', {}, 'epochs', {}, 'label', {}, 'seedArg', {}, 'seeds', {});
     for b = 1:numel(blocks)
         e = local_findEntry(reg, blocks(b).fnName);
         protocol(b).stim    = str2func(blocks(b).fnName);
@@ -1292,6 +2252,7 @@ function protocol = local_buildProtocol(reg, blocks)
         protocol(b).epochs  = blocks(b).epochs;
         protocol(b).label   = blocks(b).label;
         protocol(b).seedArg = local_seedArgFor(e);
+        protocol(b).seeds   = getfielddef(blocks(b), 'seeds', []);   % per-epoch seeds (GUI-owned)
         % Planned presentation length -- what stimulusMonitor draws its timeline from before
         % anything has run. The stimuli append a few black frames, so the true duration is a
         % touch longer; playAndLogTrial reports the exact value once the first epoch plays.
@@ -1303,7 +2264,8 @@ function txt = local_experimentToJson(blocks, opts)
     jb = cell(1, numel(blocks));
     for i = 1:numel(blocks)
         jb{i} = struct('stim', blocks(i).fnName, 'params', blocks(i).params, ...
-                       'epochs', blocks(i).epochs, 'label', blocks(i).label);
+                       'epochs', blocks(i).epochs, 'label', blocks(i).label, ...
+                       'seeds', getfielddef(blocks(i), 'seeds', []));
     end
     exp        = struct('format', 'neitz-experiment/1');
     exp.opts   = opts;
@@ -1323,11 +2285,34 @@ function [blocks, opts] = local_jsonToExperiment(reg, txt)
         end
         e = local_findEntry(reg, r.stim);
         % Optional fields default via getfielddef, so a hand-edited/older JSON that omits
-        % params / epochs / label still loads instead of throwing a raw field error.
+        % params / epochs / label / seeds still loads instead of throwing a raw field error.
         blocks(i) = struct('stimName', e.name, 'fnName', e.fn, ...
                            'params', getfielddef(r, 'params', struct()), ...
                            'epochs', double(getfielddef(r, 'epochs', 1)), ...
-                           'label',  char(string(getfielddef(r, 'label', ''))));
+                           'label',  char(string(getfielddef(r, 'label', ''))), ...
+                           'seeds',  double(reshape(getfielddef(r, 'seeds', []), 1, [])));
+    end
+    blocks = local_fixSeeds(reg, blocks);
+end
+
+function blocks = local_fixSeeds(reg, blocks)
+% Every seeded block ends up with exactly one seed per epoch: pre-seeds files (or
+% hand-edited ones) are topped up with fresh seeds, over-long lists are trimmed, and
+% non-seeded stimuli carry none.
+    for i = 1:numel(blocks)
+        e = local_findEntry(reg, blocks(i).fnName);
+        if local_seedArgFor(e) > 0
+            s = double(reshape(getfielddef(blocks(i), 'seeds', []), 1, []));
+            s = s(isfinite(s));
+            n = blocks(i).epochs;
+            if numel(s) > n, s = s(1:n); end
+            if numel(s) < n
+                s = [s, local_nextSeeds(blocks, n - numel(s))]; %#ok<AGROW>
+            end
+            blocks(i).seeds = s;
+        else
+            blocks(i).seeds = [];
+        end
     end
 end
 
@@ -1423,30 +2408,91 @@ function selftest()
     assert(ps5.stimFrames == 900 && ps5.refreshRate == 90, 'the synced frame count is what gets run');
     fprintf('[selftest] duration <-> stimFrames stay redundant through refreshRate\n');
 
+    % ---- per-epoch seeds: auto-assignment continues past the highest in use ----
     blocks    = local_emptyBlocks();
-    blocks(1) = struct('stimName', g.name, 'fnName', g.fn, 'params', ps, 'epochs', 5, 'label', 'grey gauss');
-    blocks(2) = struct('stimName', j.name, 'fnName', j.fn, 'params', pj, 'epochs', 3, 'label', 'jit');
-    opts = struct('preStim', 2, 'postStim', 1, 'itp', 3, 'seedBase', 7, ...
+    assert(isequal(local_nextSeeds(blocks, 3), [2 3 4]), 'an empty protocol starts seeding at 2');
+    assert(isempty(local_nextSeeds(blocks, 3, false)), 'non-seeded stimuli get no seeds');
+    blocks(1) = struct('stimName', g.name, 'fnName', g.fn, 'params', ps, 'epochs', 5, ...
+                       'label', 'grey gauss', 'seeds', [2 3 4 5 6]);
+    assert(isequal(local_nextSeeds(blocks, 2), [7 8]), 'fresh seeds continue past the highest');
+    blocks(1).seeds(3) = 40;                                  % a hand-edited seed
+    assert(isequal(local_nextSeeds(blocks, 1), 41), 'a hand-edited high seed moves the counter');
+    blocks(1).seeds(3) = 4;
+    blocks(2) = struct('stimName', j.name, 'fnName', j.fn, 'params', pj, 'epochs', 3, ...
+                       'label', 'jit', 'seeds', []);
+    opts = struct('preStim', 2, 'postStim', 1, 'itp', 3, ...
                   'triggerAcq', false, 'stimIndex', 3);
     opts.leds = struct('enabled', true, 'port', 'AUTO', 'mode', 2, ...
                        'intensity', [0.75 0 0; 0 0.5 0; 0 0 0; 0 0 0.125]);
     [b2, o2] = local_jsonToExperiment(reg, local_experimentToJson(blocks, opts));
     assert(numel(b2) == 2 && strcmp(b2(1).fnName, g.fn) && b2(1).epochs == 5, 'json round-trip blocks');
+    assert(isequal(b2(1).seeds, [2 3 4 5 6]) && isempty(b2(2).seeds), ...
+        'per-epoch seeds round-trip through the experiment JSON');
     assert(isequal(local_argsFor(local_findEntry(reg, b2(1).fnName), b2(1).params), {[], 0.5, 0.3, 4, 600, 60}), ...
         'json round-trip rebuilds gaussian args');
-    assert(o2.seedBase == 7, 'json round-trip opts');
     assert(o2.leds.enabled && o2.leds.mode == 2, 'json round-trip LED scalars');
     assert(isequal(size(o2.leds.intensity), [4, 3]) && abs(o2.leds.intensity(1, 1) - 0.75) < 1e-9, ...
         'json round-trip LED grid');
     assert(o2.stimIndex == 3 && o2.triggerAcq == false, ...
         'session-state round-trip (stimIndex / triggerAcq)');
+    legacy = struct('format', 'neitz-experiment/1', 'opts', struct(), 'blocks', ...
+                    {{struct('stim', g.fn, 'params', ps, 'epochs', 3, 'label', 'old')}});
+    bl = local_jsonToExperiment(reg, jsonencode(legacy));
+    assert(isequal(bl(1).seeds, [2 3 4]), 'a pre-seeds file gets fresh per-epoch seeds on load');
 
     % ---- protocol table lists one row per EPOCH; blocks stay the run-time grouping ----
+    % (this test protocol is legacy-MIXED, so it renders as the read-only overview)
     eRows = local_epochRows(reg, blocks);                 % 5 gaussian epochs + 3 jitter epochs
     assert(isequal(size(eRows), [8 4]), '5 + 3 epochs -> 8 rows of {Epoch #, Stimulus, Label, Params}');
     assert(isequal(eRows{1, 1}, 1) && isequal(eRows{8, 1}, 8), 'epoch numbering is global and 1-based');
     assert(strcmp(eRows{5, 2}, g.name) && strcmp(eRows{6, 2}, j.name), 'each row carries its block''s stimulus');
     assert(strcmp(eRows{2, 4}, eRows{3, 4}), 'epochs of one block repeat identical parameters');
+    [~, ~, edMix, keysMix] = local_epochTableSpec(reg, blocks);
+    assert(~any(edMix) && all(strcmp(keysMix(2:end), 'readonly')), 'mixed protocols are read-only');
+
+    % ---- single-stimulus protocol: one EDITABLE column per parameter + Label + seed ----
+    gb    = local_emptyBlocks();
+    gb(1) = struct('stimName', g.name, 'fnName', g.fn, 'params', ps, 'epochs', 3, ...
+                   'label', 'ga', 'seeds', [2 3 4]);
+    [cols1, ~, ed1, keys1] = local_epochTableSpec(reg, gb);
+    assert(isequal(cols1, {'Epoch #', 'Label', 'seed', 'mu', 'sigma', 'flickerHz', 'stimFrames', 'refreshRate'}), ...
+        'gaussian table: Label + seed + every parameter as its own column');
+    assert(~ed1(1) && all(ed1(2:end)), 'everything but Epoch # is editable');
+    assert(strcmp(keys1{3}, 'seed') && strcmp(keys1{4}, 'p:mu'), 'column keys map edits');
+    gRows = local_epochRows(reg, gb);
+    assert(isequal(size(gRows), [3 8]) && strcmp(gRows{2, 3}, '3') && ...
+           strcmp(gRows{2, 4}, '0.5') && strcmp(gRows{2, 7}, '600'), ...
+        'rows carry per-epoch seed + parameter cells (text for clean display)');
+    % edit one epoch's sigma: it splits into its own block, seeds staying put
+    gb2 = local_applyCellEdit(reg, gb, 2, 'p:sigma', 0.9);
+    assert(numel(gb2) == 3 && gb2(2).params.sigma == 0.9 && ...
+           isequal([gb2.seeds], [2 3 4]), 'a cell edit splits just that epoch, seeds kept');
+    % edit it back: the three epochs re-merge into one block
+    gb3 = local_applyCellEdit(reg, gb2, 2, 'p:sigma', 0.3);
+    assert(isscalar(gb3) && gb3.epochs == 3 && isequal(gb3.seeds, [2 3 4]), ...
+        'editing back re-merges the block');
+    gb4 = local_applyCellEdit(reg, gb, 2, 'seed', 99);
+    assert(isscalar(gb4) && isequal(gb4.seeds, [2 99 4]), ...
+        'a seed edit changes only that epoch and never splits the block');
+    gb5 = local_applyCellEdit(reg, gb, 3, 'label', 'last');
+    assert(numel(gb5) == 2 && strcmp(gb5(2).label, 'last') && isequal(gb5(2).seeds, 4), ...
+        'a label edit splits the labelled epoch out');
+    ok = false;
+    try
+        local_applyCellEdit(reg, gb, 1, 'seed', 'grey');
+    catch
+        ok = true;
+    end
+    assert(ok, 'a junk seed is refused');
+    jb    = local_emptyBlocks();
+    jb(1) = struct('stimName', j.name, 'fnName', j.fn, 'params', pj, 'epochs', 2, ...
+                   'label', '', 'seeds', []);
+    [colsJ, ~, ~, keysJ] = local_epochTableSpec(reg, jb);
+    assert(~any(strcmp(colsJ, 'seed')) && any(strcmp(keysJ, 'p:colorMode')), ...
+        'non-seeded stimuli get no seed column; enum params get one');
+    jb2 = local_applyCellEdit(reg, jb, 1, 'p:rfCenter', '100 200');
+    assert(isequal(jb2(1).params.rfCenter, [100 200]), 'vec2 cells parse "x y" text');
+    fprintf('[selftest] protocol table: per-parameter editable columns + per-epoch seeds\n');
     assert(local_blockOfEpoch(blocks, 5) == 1 && local_blockOfEpoch(blocks, 6) == 2, 'epoch -> owning block');
     assert(local_blockOfEpoch(blocks, 9) == 0 && local_blockOfEpoch(local_emptyBlocks(), 1) == 0, ...
         'an out-of-range epoch maps to no block');
@@ -1472,12 +2518,15 @@ function selftest()
     assert(numel(b5) == 2, 'updating adds no blocks');
     assert(b5(1).params.sigma == 0.9 && b5(1).params.stimFrames == 300 && ...
            strcmp(b5(1).label, 'retuned') && b5(1).epochs == 4, 'the targeted block took the new values');
+    assert(isequal(b5(1).seeds, [2 3 4 5]), 'shrinking a block trims seeds from the end');
     assert(b5(2).epochs == 3 && ~isfield(b5(2).params, 'sigma'), 'other blocks are untouched');
     assert(size(local_epochRows(reg, b5), 1) == 7, '5 epochs -> 4 shrinks the table to 7 rows');
     b6 = local_updateBlocks(blocks, 1:2, ps2, 'all', 2);
     assert(all([b6.epochs] == 2) && all(strcmp({b6.label}, 'all')), '"Update all" reaches every block');
+    b7 = local_updateBlocks(blocks, 1, ps2, 'grown', 7);
+    assert(isequal(b7(1).seeds, [2 3 4 5 6 7 8]), 'growing a block appends fresh seeds');
     b7 = local_updateBlocks(blocks, 1, ps2, 'zero', 0);
-    assert(b7(1).epochs == 1, 'a block can never be updated down to zero epochs');
+    assert(b7(1).epochs == 1 && isequal(b7(1).seeds, 2), 'a block can never be updated down to zero epochs');
     fprintf('[selftest] Update epochs rewrites existing rows (params / label / count) in place\n');
     fprintf('[selftest] protocol table = one row per epoch; one stimulus type per protocol\n');
 
@@ -1490,9 +2539,113 @@ function selftest()
     assert(numel(local_presetNames(pr)) == numel(pr) + 1, 'preset dropdown includes the placeholder');
     fprintf('[selftest] LED grid round-trip + presets (Off / macaque s-iso) from rig_config\n');
 
+    % ---- band spec (v2): defaults, normalization, v1 conversion, resolution ----
+    def = local_defaultPhaseSpec(2, 1, 3);
+    nrm = local_normalizePhaseSpec([], pr, def);
+    assert(isequal(nrm, def), 'an absent phases spec normalizes to the defaults');
+
+    ledsUI = struct('enabled', true, 'intensity', [0.75 0 0; 0 0.5 0; 0 0 0; 0 0 0.125]);
+    spec = def;
+    spec.stim.grid = ledsUI.intensity;
+    spec.pre.grid  = pr(kk).values;               % macaque s-iso on the pre-stim phase
+    spec.pre.rgb   = [0.5 0.5 0.5];
+    spec.iti.rgb   = [0.2 0.2 0.2];
+    spec.final.grid = [0 0 0; 0 0 0.25; 0 0 0; 0 0 0];
+    spec.syncB   = true;
+    spec.masterB = [0.25 0.25 0 0];
+    mangled = spec;
+    mangled.pre.rgb  = [0.5; 0.5; 0.5];           % jsondecode hands back columns
+    mangled.masterB  = spec.masterB(:);
+    nrm = local_normalizePhaseSpec(mangled, pr, def);
+    assert(isequal(nrm.pre.rgb, [0.5 0.5 0.5]) && isequal(nrm.masterB, [0.25 0.25 0 0]) && ...
+           nrm.syncB && isequal(nrm.pre.grid, pr(kk).values), ...
+        'v2 spec normalizes jsondecode shapes back to rows');
+
+    v1 = struct('pre',   struct('seconds', 4, 'rgb', [0.1 0.1 0.1], ...
+                                'leds', struct('mode', 'preset', 'preset', 'macaque s-iso')), ...
+                'post',  struct('seconds', 1, 'rgb', [0 0 0], 'leds', struct('mode', 'main', 'preset', '')), ...
+                'iti',   struct('seconds', 3, 'rgb', [0 0 0], 'leds', struct('mode', 'off', 'preset', '')), ...
+                'final', struct('rgb', [0 0 0], 'leds', struct('mode', 'off', 'preset', '')));
+    defM = def;
+    defM.stim.grid = ledsUI.intensity;            % what applyLedsToUI already loaded
+    n1 = local_normalizePhaseSpec(v1, pr, defM);
+    assert(n1.pre.seconds == 4 && isequal(n1.pre.grid, pr(kk).values) && ...
+           isequal(n1.post.grid, ledsUI.intensity) && ~any(n1.iti.grid(:)) && ~any(n1.final.grid(:)), ...
+        'a v1 (symbolic) spec converts: preset -> its grid, main -> the stimulus grid, off -> dark');
+
+    ph = local_resolvePhaseSpec(spec);
+    assert(ph.rendered && ph.pre.seconds == 2 && isequal(ph.pre.ledGrid, pr(kk).values) && ...
+           isequal(ph.pre.rgb, [0.5 0.5 0.5]), 'resolve: pre carries seconds + rgb + grid');
+    assert(isequal(ph.iti.rgb, [0.2 0.2 0.2]) && ~any(ph.iti.ledGrid(:)), 'resolve: iti as set');
+    assert(isequal(ph.final.ledGrid, spec.final.grid), ...
+        'resolve: a lit end-of-stim grid is applied (and handed off at run end)');
+    specDarkEnd = spec;
+    specDarkEnd.final.grid = zeros(4, 3);
+    ph2 = local_resolvePhaseSpec(specDarkEnd);
+    assert(isempty(ph2.final.ledGrid), 'resolve: an all-dark end grid = classic dark+close teardown');
+
+    % the band spec survives the experiment JSON round-trip
+    opts2 = opts;
+    opts2.phases = spec;
+    [~, o3] = local_jsonToExperiment(reg, local_experimentToJson(blocks, opts2));
+    n3 = local_normalizePhaseSpec(getfielddef(o3, 'phases', []), pr, def);
+    assert(isequal(n3.pre.grid, pr(kk).values) && isequal(n3.iti.rgb, [0.2 0.2 0.2]) && ...
+           n3.syncB && isequal(n3.masterB, [0.25 0.25 0 0]) && ...
+           isequal(n3.final.grid, spec.final.grid), ...
+        'band spec (grids + colors + B-lock) round-trips through the experiment JSON');
+    fprintf('[selftest] band spec v2: defaults, v1 conversion, resolution, JSON round-trip\n');
+
+    % ---- Quick-load slots: JSON round-trip + labels + path resolution ----
+    tq = tempname;
+    mkdir(tq);
+    cleanupQ = onCleanup(@() rmdir(tq, 's'));
+    qf = fullfile(tq, 'quickload_slots.json');
+    sl = repmat(struct('name', '', 'file', ''), 1, 10);
+    sl(1) = struct('name', 'grey 5x', 'file', 'grey_5x.json');
+    sl(7) = struct('name', '', 'file', fullfile(tq, 'abs.json'));
+    local_saveQuickSlots(qf, sl);
+    sl2 = local_loadQuickSlots(qf);
+    assert(numel(sl2) == 10 && strcmp(sl2(1).name, 'grey 5x') && strcmp(sl2(1).file, 'grey_5x.json') ...
+           && isempty(sl2(2).file) && strcmp(sl2(7).file, fullfile(tq, 'abs.json')), ...
+        'quick-load slots round-trip through JSON');
+    slMissing = local_loadQuickSlots(fullfile(tq, 'missing.json'));
+    assert(numel(slMissing) == 10 && all(cellfun(@isempty, {slMissing.file})), ...
+        'a missing slots file yields empty slots, not an error'); %#ok<*NASGU>
+    assert(strcmp(local_quickLabel(3, sl2(3)), '3:  (empty)') && ...
+           contains(local_quickLabel(1, sl2(1)), 'grey 5x') && ...
+           contains(local_quickLabel(7, sl2(7)), 'abs'), 'slot labels: number + name / (empty)');
+    assert(strcmp(local_slotPath('/exp', 'a.json'), fullfile('/exp', 'a.json')) && ...
+           strcmp(local_slotPath('/exp', '/data/b.json'), '/data/b.json'), ...
+        'bare slot files resolve under experiments/, absolute paths pass through');
+    fprintf('[selftest] Quick-load slots: JSON round-trip, labels, path resolution\n');
+
+    % ---- generateStimScript: every registry entry emits a parseable, complete script ----
+    tg = tempname;
+    mkdir(tg);
+    cleanupG = onCleanup(@() local_cleanupGenTest(tg));
+    phGen = ph;                          % the resolved plan from above (preset pre-grid etc.)
+    for gi = 1:numel(reg)
+        [gfn, gpath] = generateStimScript(reg(gi), phGen, ledsUI.intensity, tg);
+        assert(exist(gpath, 'file') == 2, 'generated file exists: %s', reg(gi).fn);
+        % parseable + exact signature: nargin resolves only if MATLAB can parse the file
+        assert(nargin(gfn) == size(reg(gi).params, 1), ...
+            'generated %s has the same arity as %s', gfn, reg(gi).fn);
+        src = fileread(gpath);
+        assert(contains(src, ['''' reg(gi).fn '''']), 'record keeps the AA stimulus name');
+        assert(contains(src, 'stageClientShared') && contains(src, 'playAndLogTrial') && ...
+               contains(src, 'phasePlan') && contains(src, 'AUTO-GENERATED'), ...
+            'generated script wires client/logging/phases');
+        assert(contains(src, 's.frame + 1') && ~contains(src, 'floor(s.time'), ...
+            'generated controllers index by s.frame, never s.time');
+    end
+    fprintf('[selftest] generateStimScript: %d stimuli emit parseable scripts (arity + markers)\n', ...
+        numel(reg));
+
     proto = local_buildProtocol(reg, blocks);
     assert(numel(proto) == 2 && proto(1).seedArg == 1 && proto(2).seedArg == 0, 'buildProtocol seedArg per block');
     assert(isa(proto(1).stim, 'function_handle'), 'buildProtocol resolves the handle');
+    assert(isequal(proto(1).seeds, [2 3 4 5 6]) && isempty(proto(2).seeds), ...
+        'buildProtocol hands runExperiment the per-epoch seeds');
 
     sample = fullfile(fileparts(mfilename('fullpath')), 'experiments', 'example_grey_flicker_and_gaussian.json');
     if exist(sample, 'file')
@@ -1601,6 +2754,20 @@ function local_cleanupNestedTest(td)
 % Best-effort cleanup for the nested-writer self-test: clear the context, remove the temp dir.
     try
         evalin('base', 'clear neitzSessionContext');
+    catch
+    end
+    try
+        rmdir(td, 's');
+    catch
+    end
+end
+
+
+function local_cleanupGenTest(td)
+% Cleanup for the generator self-test: generateStimScript addpath'd the temp dir -- take
+% it off the path again before removing it.
+    try
+        rmpath(td);
     catch
     end
     try

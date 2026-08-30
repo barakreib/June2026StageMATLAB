@@ -1,7 +1,12 @@
 # stimulusGUI / monitor regression suite
 
 Covers the 2026-08-29 work on `stimulusGUI.m`, `stimulusMonitor.m`, `stimProgress.m`,
-`runExperiment.m`, `playAndLogTrial.m` and `finalizeStimBlock.m`.
+`runExperiment.m`, `playAndLogTrial.m` and `finalizeStimBlock.m` — plus the generated
+stimulus scripts (`generateStimScript.m`, `stageClientShared.m`, `ledSession.m`,
+`stageHoldScreen.m`): `test_generator` runs every generated script against a
+`FakeStageClient` and replays its controllers frame by frame against the AA algorithms
+recomputed independently; `test_phases` covers the per-phase LED switching, the
+inter-stim / end-of-run backdrops, and the final-LED handoff.
 
 ```matlab
 cd June2026StageMATLAB/tests
@@ -32,6 +37,12 @@ Three tiers, each with its own guard:
 | 3 | The real pre-flight, timing out | Runs against a **copy** of the repo whose `rig_config.json` says `127.0.0.1`, with a socket that accepts and never answers |
 
 `runTests` asserts the tier-2 shadow is actually in place before running those tests.
+
+Additional nets: `tests/stageHost.m` shadows the repo's `stageHost` with `127.0.0.1` for
+the whole suite, so even a bug that constructs a real `StageClient` gets an instant local
+refusal instead of the live rig; and the tier-2 tests `cd` into a scratch dir before
+pressing Run, because Run now writes the generated stimulus script into
+`<pwd>/generated_stimuli/`.
 
 Also: **never `delete` the GUI's saved session.** `stimulusGUI` persists it to `prefdir`,
 which is the user's *real* MATLAB preferences directory — deleting it throws away their

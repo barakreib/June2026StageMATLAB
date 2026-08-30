@@ -1,8 +1,20 @@
-function sync = playAndLogTrial(client, player, outDir, record, refreshRate, totalFrames)
+function sync = playAndLogTrial(client, player, outDir, record, refreshRate, totalFrames, phases)
 % playAndLogTrial  Play one presentation, measure display frame-sync from Stage's OWN
 % flip telemetry, and log ONE manifest row (with the frame-sync result) for the trial.
 %
 %   sync = playAndLogTrial(client, player, outDir, record, refreshRate, totalFrames)
+%   sync = playAndLogTrial(..., phases)
+%
+% `phases` (optional) describes how the presentation's timeline divides into phases --
+% the generated stimulus scripts pass {prestim, presenting, poststim} with their baked
+% durations and per-phase LED grids:
+%     struct array: .name (char, a stimulusMonitor phase name), .durS (seconds >= 0),
+%                   .leds (4x3 LED duty grid to load as the phase starts, or [] = leave)
+% While the presentation renders remotely, the wait loop below applies each phase's LED
+% grid (through ledSession -- a no-op unless runExperiment registered the run's rig) as
+% its frames begin, and reports the CURRENT phase to the session monitor instead of one
+% long 'presenting'. LED grids are applied whether or not a monitor is attached. Omitted
+% or empty => the whole presentation reports as 'presenting', exactly as before.
 %
 % Drop-in replacement for the bare `writeStimManifest(pwd, record)` + `client.play(player)`
 % pair in the AA* stimulus functions. It:
@@ -27,6 +39,8 @@ function sync = playAndLogTrial(client, player, outDir, record, refreshRate, tot
 % the run drifts late by droppedFrames/refresh. RealtimePlayer's render loop is
 % frame-indexed, so the flip COUNT is unchanged: counting frames misses it, measuring flip
 % DURATIONS catches it.
+
+    if nargin < 7, phases = []; end
 
     % ---- (1) Pre-play timestamp (preserved through the post-play write) ----
     record.timestamp = char(datetime('now', 'Format', 'yyyy-MM-dd''T''HH:mm:ss'));
@@ -61,7 +75,7 @@ function sync = playAndLogTrial(client, player, outDir, record, refreshRate, tot
     catch playErr
     end
     if played
-        local_awaitPresentation(double(totalFrames) / refresh, record, refresh, totalFrames);
+        local_awaitPresentation(double(totalFrames) / refresh, record, refresh, totalFrames, phases);
         try
             info = client.getPlayInfo();   % the presentation has finished: returns promptly
         catch
@@ -91,39 +105,99 @@ function sync = playAndLogTrial(client, player, outDir, record, refreshRate, tot
 end
 
 
-function local_awaitPresentation(durS, record, refresh, totalFrames)
+function local_awaitPresentation(durS, record, refresh, totalFrames, phases)
 % Wait out a presentation that is rendering on the Stage server, keeping this MATLAB
 % responsive: short pause() slices against a DEADLINE (so the total keeps plain-pause
 % accuracy) with a progress report each tick. The pause is what lets the GUI repaint and
 % run its Cancel callback -- the whole point of not blocking in getPlayInfo.
 %
+% With a phase plan, each slice also resolves WHICH phase the elapsed time falls in:
+% entering a phase applies its LED grid (ledSession -- best-effort, no-op without a rig)
+% and the tick reports that phase's own name/elapsed/total to the monitor. The LED
+% switching runs even with no monitor attached -- it is rig behavior, not display sugar.
+%
 % Cancelling does NOT cut a presentation short. It is already playing on the server and its
 % Clampex sweep is already recording, so it always runs to completion and is logged; the
 % cancel is acted on at runExperiment's next epoch boundary.
     if ~isfinite(durS) || durS <= 0, return; end
-    if ~stimProgress('isAttached')
-        % Nothing is listening (a stimulus run straight from the prompt): still yield in
-        % slices rather than blocking, so Ctrl-C and figure redraws keep working.
-        local_sliceWait(durS, []);
-        return;
+    ph       = local_normalizePhases(phases, durS);
+    attached = stimProgress('isAttached');
+    info     = [];
+    if attached
+        info = local_stimInfo(record, refresh, totalFrames, durS);
     end
-    info = local_stimInfo(record, refresh, totalFrames, durS);
-    local_sliceWait(durS, info);
-    stimProgress('report', struct('phase', 'presenting', ...
-        'phaseElapsed', durS, 'phaseTotal', durS, 'stim', info));
-end
 
-
-function local_sliceWait(durS, info)
+    lastIdx = 0;
     t0 = tic;
     while true
         el = toc(t0);
+        idx = local_phaseAt(ph, min(el, durS));
+        if idx > lastIdx
+            % Entering a new phase (possibly skipping zero-length ones): apply the LED
+            % grid of every phase crossed, in order, so none is silently dropped.
+            for k = lastIdx+1:idx
+                ledSession('apply', ph(k).leds);
+            end
+            lastIdx = idx;
+        end
         if el >= durS, break; end
-        if ~isempty(info)
-            stimProgress('report', struct('phase', 'presenting', ...
-                'phaseElapsed', el, 'phaseTotal', durS, 'stim', info));
+        if attached
+            stimProgress('report', struct('phase', ph(idx).name, ...
+                'phaseElapsed', el - ph(idx).startS, 'phaseTotal', ph(idx).durS, ...
+                'stim', info));
         end
         pause(min(0.05, durS - el));
+    end
+    if attached
+        stimProgress('report', struct('phase', ph(end).name, ...
+            'phaseElapsed', ph(end).durS, 'phaseTotal', ph(end).durS, 'stim', info));
+    end
+end
+
+
+function ph = local_normalizePhases(phases, durS)
+% Reduce the caller's phase plan to {name, startS, durS, leds} rows covering [0, durS].
+% No plan (the AA* scripts) => one 'presenting' phase spanning everything, i.e. the
+% pre-phase behavior. The last phase is stretched to absorb rounding so lookups at
+% el == durS always land inside the plan.
+    ph = struct('name', {}, 'startS', {}, 'durS', {}, 'leds', {});
+    if isstruct(phases)
+        t = 0;
+        for i = 1:numel(phases)
+            d = 0;
+            if isfield(phases(i), 'durS') && ~isempty(phases(i).durS)
+                d = max(0, double(phases(i).durS));
+            end
+            leds = [];
+            if isfield(phases(i), 'leds'), leds = phases(i).leds; end
+            nm = 'presenting';
+            if isfield(phases(i), 'name') && ~isempty(phases(i).name)
+                nm = char(string(phases(i).name));
+            end
+            ph(end+1) = struct('name', nm, 'startS', t, 'durS', d, 'leds', leds); %#ok<AGROW>
+            t = t + d;
+        end
+    end
+    if isempty(ph)
+        ph = struct('name', 'presenting', 'startS', 0, 'durS', durS, 'leds', []);
+    else
+        ph(end).durS = max(ph(end).durS, durS - ph(end).startS);
+    end
+end
+
+
+function idx = local_phaseAt(ph, el)
+% Index of the LAST non-zero-length phase containing `el` (zero-length phases are crossed,
+% never dwelt in). Clamps into [1, numel(ph)].
+    idx = 1;
+    for i = 1:numel(ph)
+        if el >= ph(i).startS && (ph(i).durS > 0 || i == numel(ph))
+            idx = i;
+        end
+        if el < ph(i).startS + ph(i).durS
+            idx = i;
+            break;
+        end
     end
 end
 

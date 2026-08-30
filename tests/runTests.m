@@ -27,7 +27,8 @@ function ok = runTests()
     % ---- tier 1: pure logic + headless GUI, no network, no stub needed ----
     tier1 = {@() stimulusGUI('__selftest__'), @test_cancel, @test_cancel_async, ...
              @test_protocol_complete, @test_play_unblocked, @test_monitor, ...
-             @test_timeline_drift, @test_prep_landing, @test_gui_edits, @test_gui_smoke};
+             @test_timeline_drift, @test_prep_landing, @test_gui_edits, @test_gui_smoke, ...
+             @test_generator, @test_phases};
 
     % ---- tier 2: drives the real Run button, so the stub runner MUST shadow the real one ----
     tier2 = {@test_gui_lock, @test_gui_runfail};
