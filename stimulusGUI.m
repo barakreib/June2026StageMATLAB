@@ -939,7 +939,13 @@ function stimulusGUI(mode)
         % (the protocol as it stands, or an existing saved .json). Also clears a slot.
         selIdx = find(cellfun(@isempty, {qlSlots.file}), 1);
         if isempty(selIdx), selIdx = 1; end
-        if ~isempty(h.qlGroup.SelectedObject), selIdx = h.qlGroup.SelectedObject.UserData; end
+        % The group's SelectedObject is NEVER empty: with no slot chosen it is the
+        % HIDDEN "none" radio, whose UserData is 0 -- feeding that into the dropdown
+        % (valid values 1..10) aborted the dialog build half-way, leaving an empty,
+        % unclickable window. Only a REAL slot (UserData >= 1) may override.
+        if ~isempty(h.qlGroup.SelectedObject) && h.qlGroup.SelectedObject.UserData >= 1
+            selIdx = h.qlGroup.SelectedObject.UserData;
+        end
 
         pp  = h.fig.Position;
         d   = uifigure('Name', 'Assign quick-load slot', 'Resize', 'off', ...

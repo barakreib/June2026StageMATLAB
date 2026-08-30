@@ -129,6 +129,23 @@ function test_gui_smoke()
            strcmp(pTbl.Data{find(strcmp(n3, 'stimFrames'), 1), 2}, '180'), ...
         'switching away and back restores the last-used parameters for that stimulus');
 
+    % ---- Assign slot dialog builds COMPLETELY with no slot selected (regression:
+    % the hidden none-radio's UserData=0 used to abort construction half-way) ----
+    asn = btn('Assign slot...');
+    asn.ButtonPushedFcn(asn, []);
+    dlg = findall(0, 'Type', 'figure', 'Name', 'Assign quick-load slot');
+    assert(isscalar(dlg), 'the Assign dialog opened');
+    dbtn = @(t) findall(dlg, 'Type', 'uibutton', 'Text', t);
+    assert(~isempty(dbtn('Bind current protocol')) && ~isempty(dbtn('Bind existing file...')) && ...
+           ~isempty(dbtn('Clear slot')) && ~isempty(dbtn('Cancel')), ...
+        'all four dialog actions exist (the build reached the end)');
+    dd = findall(dlg, 'Type', 'uidropdown');
+    assert(isscalar(dd) && any(dd.Value == 1:10), 'the slot dropdown holds a REAL slot, never 0');
+    dc = dbtn('Cancel');
+    dc.ButtonPushedFcn(dc, []);
+    assert(isempty(findall(0, 'Type', 'figure', 'Name', 'Assign quick-load slot')), ...
+        'Cancel closes the dialog');
+
     % ---- Cancel / Run idle state ----
     cb = btn('Cancel');
     assert(~isempty(cb) && strcmp(cb.Enable, 'off'), 'Cancel is present and disabled while idle');
