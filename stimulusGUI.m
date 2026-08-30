@@ -153,12 +153,14 @@ function stimulusGUI(mode)
         buildQuickLoad(lc);
 
         % ---------------- middle: the protocol builder ----------------
-        rp = uigridlayout(top, [7 1]);
+        rp = uigridlayout(top, [8 1]);
         % Row 3 (the parameter table) is resized to its content by showEntry: exactly tall
         % enough that refreshRate is never scrolled out of sight -- it is half of the duration
         % relationship -- and no taller, so short stimuli hand the slack to the epoch table,
         % which is the row that flexes. Tight RowSpacing buys that table a few more rows.
-        rp.RowHeight  = {28, 24, local_paramTableHeight(8), 40, 20, '1x', 34};
+        % Row 4 is the checkerboard auto-checks checkbox; showEntry collapses it to 0 px
+        % for stimuli without checksX/checksY.
+        rp.RowHeight  = {28, 24, local_paramTableHeight(8), 22, 40, 20, '1x', 34};
         rp.RowSpacing = 4;
         rp.Padding    = [0 0 0 0];
         h.rightGrid   = rp;
@@ -177,6 +179,17 @@ function stimulusGUI(mode)
         h.paramTable = uitable(rp, 'ColumnName', {'Parameter', 'Value'}, ...
             'ColumnEditable', [false true], 'ColumnWidth', {180, 220}, 'RowName', {}, ...
             'CellEditCallback', @(s, e) onParamEdit(e));
+
+        % Checkerboards only (showEntry hides it otherwise): keep checksX x checksY
+        % square-on-the-wall -- edit either direction and the other follows.
+        ar = uigridlayout(rp, [1 1]); ar.Padding = [6 0 6 0];
+        h.autoChecks = uicheckbox(ar, 'Text', 'Auto-derive the other checks direction (square checks fill the screen)', ...
+            'Value', false, 'ValueChangedFcn', @(s,e) onAutoChecks(), ...
+            'Tooltip', ['When ticked, editing checksX rewrites checksY (and vice versa) so the ' ...
+                        'checks stay SQUARE ON THE WALL and tile the whole screen: ' ...
+                        'checksY = round(checksX * (H/W) / pixel_aspect) on the 912 x 1140 ' ...
+                        'diamond DMD (40 -> 25 at pixel_aspect 2). Applies in this panel and ' ...
+                        'to checksX / checksY cells typed in the epoch table below.']);
 
         er = uigridlayout(rp, [1 5]); er.ColumnWidth = {60, 70, 55, '1x', 130};
         er.Padding = [6 3 6 3];
@@ -505,6 +518,10 @@ function stimulusGUI(mode)
         h.paramTable.Data = local_paramRows(curEntry, ps);   % + the derived "duration (s)" row
         h.rightGrid.RowHeight{3} = local_paramTableHeight(size(h.paramTable.Data, 1));
         h.paramTitle.Text = ['Parameters for:  ' curEntry.name '   (' curEntry.fn ')'];
+        % the auto-checks row exists only for stimuli with checksX/checksY (checkerboards)
+        hasChecks = local_hasChecksXY(curEntry);
+        h.autoChecks.Visible = hasChecks;
+        h.rightGrid.RowHeight{4} = 22 * double(hasChecks);
         if local_seedArgFor(curEntry) > 0
             h.seedNote.Text = 'Seeds: one per epoch, assigned at random -- editable in the seed column.';
         else
@@ -548,7 +565,30 @@ function stimulusGUI(mode)
                 return;
             end
         end
+        if h.autoChecks.Value && local_hasChecksXY(curEntry) && ...
+                any(strcmp(name, {'checksX', 'checksY'}))
+            try
+                h.paramTable.Data = local_syncChecks(curEntry, h.paramTable.Data, name);
+            catch err
+                h.paramTable.Data = data;    % leave the typed text in place to be corrected
+                uialert(h.fig, err.message, 'Invalid parameter');
+                return;
+            end
+        end
         rememberParams();
+    end
+
+    function onAutoChecks()
+        % Ticking the box squares the CURRENT pair up immediately (checksX drives
+        % checksY); from then on each edit re-derives the other direction. Unticking
+        % just stops the coupling -- the values stay as shown.
+        if ~h.autoChecks.Value || ~local_hasChecksXY(curEntry), return; end
+        try
+            h.paramTable.Data = local_syncChecks(curEntry, h.paramTable.Data, 'checksX');
+            rememberParams();
+        catch
+            % a half-typed checksX stays put; the cell-edit callback reports it when touched
+        end
     end
 
     function onAddBlock()
@@ -591,6 +631,9 @@ function stimulusGUI(mode)
         end
         try
             blocks = local_applyCellEdit(reg, blocks, row, keys{col}, evt.NewData);
+            if h.autoChecks.Value    % keep that epoch's checks square-on-the-wall too
+                blocks = local_autoChecksEpoch(reg, blocks, row, keys{col});
+            end
         catch err
             uialert(h.fig, err.message, 'Invalid value');
         end
@@ -623,19 +666,23 @@ function stimulusGUI(mode)
 
     function onPhaseGridEdit(key, evt)
         % Keep every cell a clamped number (the tables carry R and G only; B is global),
-        % then mirror the whole grid to any tables linked with this one.
+        % then mirror the whole grid to any tables linked with this one. A hand-edited
+        % grid is no longer the assigned preset's values, so the assignment clears.
         d = h.phGrid.(key).Data;
         if isempty(evt.Indices), return; end
         v = double(evt.NewData);
         if ~isscalar(v) || ~isfinite(v), v = 0; end
         d(evt.Indices(1), evt.Indices(2)) = min(max(v, 0), 1);
         h.phGrid.(key).Data = d;
+        setPhasePresetName(key, '');
         syncLinked(key);
     end
 
     function onPhasePreset(key)
         % Fill this phase's R/G from the preset; the preset's B column goes to the
         % GLOBAL B (B never varies by phase, so loading a preset sets it everywhere).
+        % The dropdown keeps showing the name: that IS the phase's preset assignment,
+        % saved with experiments/state and re-resolved against rig_config on load.
         name = h.phPreset.(key).Value;
         k = find(strcmp({presets.name}, name), 1);
         if isempty(k), return; end     % the "(load preset...)" placeholder row
@@ -645,6 +692,23 @@ function stimulusGUI(mode)
         syncLinked(key);
     end
 
+    function nm = phasePresetName(key)
+        % This phase's preset assignment: the dropdown's name, '' when unassigned.
+        nm = char(h.phPreset.(key).Value);
+        if strcmp(nm, local_noPresetItem()), nm = ''; end
+    end
+
+    function setPhasePresetName(key, nm)
+        % Point the dropdown at `nm` without firing its callback; anything not in the
+        % current preset list (including '') shows as unassigned.
+        nm = char(string(nm));
+        if ~isempty(nm) && any(strcmp(h.phPreset.(key).Items, nm))
+            h.phPreset.(key).Value = nm;
+        else
+            h.phPreset.(key).Value = local_noPresetItem();
+        end
+    end
+
     % ------ LED-table links: ONE linked set of sections sharing LED R/G + RGBval ------
     function ks = linkMembers()
         all = {'pre', 'post', 'iti', 'final'};
@@ -652,15 +716,18 @@ function stimulusGUI(mode)
     end
 
     function syncLinked(key)
-        % Mirror `key`'s LED grid AND its RGBval screen to every linked section
-        % (no-op when key is unlinked, and for the stimulus grid, which has neither).
+        % Mirror `key`'s LED grid, its RGBval screen AND its preset assignment to every
+        % linked section (no-op when key is unlinked, and for the stimulus grid, which
+        % has none of the three).
         if ~isfield(linkOn, key) || ~linkOn.(key), return; end
-        d = h.phGrid.(key).Data;
-        v = phaseScreenRGB(key);
+        d  = h.phGrid.(key).Data;
+        v  = phaseScreenRGB(key);
+        nm = phasePresetName(key);
         for m = linkMembers()
             if ~strcmp(m{1}, key)
                 h.phGrid.(m{1}).Data = d;
                 setPhaseScreenRGB(m{1}, v);
+                setPhasePresetName(m{1}, nm);
             end
         end
     end
@@ -753,6 +820,7 @@ function stimulusGUI(mode)
                 src = others{1};
                 h.phGrid.(key).Data = h.phGrid.(src).Data;
                 setPhaseScreenRGB(key, phaseScreenRGB(src));
+                setPhasePresetName(key, phasePresetName(src));
             end
         end
         h.phGrid.(key).Selection   = [];    % no lingering cell selection between toggles
@@ -852,16 +920,20 @@ function stimulusGUI(mode)
         % light it was saved with, even if rig_config presets change later.
         % Grids are stored as full 4x3 (R,G from each phase table + the GLOBAL B column),
         % so saved experiments, resolution and the run pipeline are format-unchanged.
+        % Each phase ALSO records its preset assignment (the dropdown name, '' when
+        % unassigned): on load an assigned phase re-fills from TODAY's rig_config preset
+        % (recalibrations flow into old experiments), with the explicit grid as the
+        % fallback when the preset no longer exists.
         ps = struct('version', 2);
         ps.pre   = struct('seconds', h.preStim.Value,  'rgb', phaseScreenRGB('pre'), ...
-                          'grid', phaseGrid43('pre'));
-        ps.stim  = struct('grid', phaseGrid43('stim'));
+                          'grid', phaseGrid43('pre'),   'preset', phasePresetName('pre'));
+        ps.stim  = struct('grid', phaseGrid43('stim'),  'preset', phasePresetName('stim'));
         ps.post  = struct('seconds', h.postStim.Value, 'rgb', phaseScreenRGB('post'), ...
-                          'grid', phaseGrid43('post'));
+                          'grid', phaseGrid43('post'),  'preset', phasePresetName('post'));
         ps.iti   = struct('seconds', h.itp.Value,      'rgb', phaseScreenRGB('iti'), ...
-                          'grid', phaseGrid43('iti'));
+                          'grid', phaseGrid43('iti'),   'preset', phasePresetName('iti'));
         ps.final = struct('rgb', phaseScreenRGB('final'), ...
-                          'grid', phaseGrid43('final'));
+                          'grid', phaseGrid43('final'), 'preset', phasePresetName('final'));
         ps.syncB   = true;                     % B is always global now
         ps.masterB = double(h.masterB.Data(:)');
         ps.links = struct('pre', 0, 'post', 0, 'iti', 0, 'final', 0);
@@ -894,6 +966,31 @@ function stimulusGUI(mode)
             key = kk{1};
             h.phGrid.(key).Data = spec.(key).grid(:, 1:2);
             setPhaseScreenRGB(key, spec.(key).rgb);
+        end
+        % Preset assignments: restore each dropdown, and AUTO-POPULATE assigned phases
+        % from TODAY's rig_config presets -- exactly as if the operator re-picked them
+        % left to right (R/G to the phase, the preset's B column to the global B; with
+        % several assigned presets the rightmost one's B wins, as it does by hand). A
+        % preset that has vanished from rig_config keeps the saved explicit grid.
+        gone = {};
+        for kk = {'pre', 'stim', 'post', 'iti', 'final'}
+            key = kk{1};
+            nm  = spec.(key).preset;
+            setPhasePresetName(key, nm);
+            if isempty(nm), continue; end
+            pk = find(strcmp({presets.name}, nm), 1);
+            if isempty(pk)
+                gone{end + 1} = sprintf('%s: "%s"', key, nm);   %#ok<AGROW>
+                setPhasePresetName(key, '');
+            else
+                vals = local_coerce43(presets(pk).values);
+                h.phGrid.(key).Data = vals(:, 1:2);
+                h.masterB.Data      = vals(:, 3);
+            end
+        end
+        if ~isempty(gone)
+            setLedStatus(sprintf(['Preset(s) no longer in rig_config -- kept the values ' ...
+                'saved with the experiment: %s.'], strjoin(gone, ', ')), [0.72 0.45 0.12]);
         end
         linkMode = false;
         h.linkBtn.Text = 'link values';
@@ -1379,7 +1476,8 @@ function stimulusGUI(mode)
         try
             o = struct('preStim', h.preStim.Value, 'postStim', h.postStim.Value, ...
                        'itp', h.itp.Value, 'triggerAcq', logical(h.triggerAcq.Value), ...
-                       'stimIndex', h.list.ValueIndex);
+                       'stimIndex', h.list.ValueIndex, ...
+                       'autoChecks', logical(h.autoChecks.Value));
             o.leds   = gatherLeds();
             o.phases = gatherPhaseSpec();
             rememberParams();               % capture the panel as shown right now
@@ -1405,6 +1503,7 @@ function stimulusGUI(mode)
         h.postStim.Value   = getfielddef(o, 'postStim', 1);
         h.itp.Value        = getfielddef(o, 'itp', 3);
         h.triggerAcq.Value = logical(getfielddef(o, 'triggerAcq', true));
+        h.autoChecks.Value = logical(getfielddef(o, 'autoChecks', false));
         applyLedsToUI(getfielddef(o, 'leds', struct()));
         applyPhasesToUI(getfielddef(o, 'phases', []));
         lastParams = local_coerceLastParams(reg, getfielddef(o, 'last_params', struct()));
@@ -1697,7 +1796,12 @@ end
 
 function items = local_presetNames(presets)
     names = arrayfun(@(p) char(string(p.name)), presets(:)', 'UniformOutput', false);
-    items = [{'(load preset...)'}, names];
+    items = [{local_noPresetItem()}, names];
+end
+
+function s = local_noPresetItem()
+% The preset dropdowns' placeholder row = "this phase is not assigned to a preset".
+    s = '(load preset...)';
 end
 
 function n = local_ledNames()
@@ -1769,11 +1873,11 @@ function d = local_defaultPhaseSpec(preS, postS, itiS)
 % The spec that reproduces the pre-overhaul behavior: black screens, every phase grid
 % dark, all-dark end state (= the classic dark + close teardown).
     d = struct('version', 2, ...
-        'pre',   struct('seconds', preS,  'rgb', [0 0 0], 'grid', zeros(4, 3)), ...
-        'stim',  struct('grid', zeros(4, 3)), ...
-        'post',  struct('seconds', postS, 'rgb', [0 0 0], 'grid', zeros(4, 3)), ...
-        'iti',   struct('seconds', itiS,  'rgb', [0 0 0], 'grid', zeros(4, 3)), ...
-        'final', struct('rgb', [0 0 0], 'grid', zeros(4, 3)));
+        'pre',   struct('seconds', preS,  'rgb', [0 0 0], 'grid', zeros(4, 3), 'preset', ''), ...
+        'stim',  struct('grid', zeros(4, 3), 'preset', ''), ...
+        'post',  struct('seconds', postS, 'rgb', [0 0 0], 'grid', zeros(4, 3), 'preset', ''), ...
+        'iti',   struct('seconds', itiS,  'rgb', [0 0 0], 'grid', zeros(4, 3), 'preset', ''), ...
+        'final', struct('rgb', [0 0 0], 'grid', zeros(4, 3), 'preset', ''));
     d.syncB   = false;
     d.masterB = zeros(1, 4);
     d.links   = struct('pre', 0, 'post', 0, 'iti', 0, 'final', 0);   % LED-table link groups
@@ -1804,6 +1908,13 @@ function spec = local_normalizePhaseSpec(spec, presets, def)
             dst.grid = local_coerce43(src.grid);
         elseif isV1 && isfield(src, 'leds')
             dst.grid = local_v1Grid(src.leds, presets, out.stim.grid);
+        end
+        if isfield(src, 'preset')       % pre-preset-memory saves simply stay unassigned
+            try
+                dst.preset = strtrim(char(string(src.preset)));
+            catch
+                dst.preset = '';
+            end
         end
         out.(key) = dst;
     end
@@ -2056,6 +2167,64 @@ function ps = local_paramsFromRows(entry, data)
 end
 
 
+% ---------- optional checksX <-> checksY auto-derivation (square on the wall) ----------
+% The checkerboards' 40 x 25 default is the square-on-the-wall pair at pixel_aspect 2 on
+% the 912 x 1140 diamond DMD. With the auto-checks box ticked, editing either direction
+% re-derives the other from the same rule the generated scripts document:
+%   checksY = round(checksX * (H/W) / pixel_aspect)
+
+function tf = local_hasChecksXY(entry)
+% Only the checkerboards expose both checks directions as parameters.
+    tf = any(strcmp(entry.params(:, 1), 'checksX')) && any(strcmp(entry.params(:, 1), 'checksY'));
+end
+
+function r = local_checksRatio()
+% checksY per checksX for square-on-the-wall checks tiling the full canvas.
+    cs = loadRigConfig('canvas_size', [912 1140]);
+    r  = (double(cs(2)) / double(cs(1))) / double(loadRigConfig('pixel_aspect', 2));
+end
+
+function y = local_checksYFromX(x)
+    y = max(1, round(double(x) * local_checksRatio()));
+end
+
+function x = local_checksXFromY(y)
+    x = max(1, round(double(y) / local_checksRatio()));
+end
+
+function data = local_syncChecks(entry, data, editedName)
+% Re-derive whichever checks direction the user did NOT just type. Returns the updated
+% table rows; throws (with a uialert-ready message) on unparseable input.
+    xRow = local_rowIndex(data, 'checksX');
+    yRow = local_rowIndex(data, 'checksY');
+    if any([xRow yRow] == 0), return; end
+    if strcmp(editedName, 'checksY')
+        y = local_parseValue('num', data{yRow, 2}, entry, 'checksY');
+        data{xRow, 2} = local_valueStr('num', local_checksXFromY(y));
+    else
+        x = local_parseValue('num', data{xRow, 2}, entry, 'checksX');
+        data{yRow, 2} = local_valueStr('num', local_checksYFromX(x));
+    end
+end
+
+function blocks = local_autoChecksEpoch(reg, blocks, row, key)
+% Epoch-table twin of local_syncChecks: after a checksX/checksY cell edit, rewrite the
+% OTHER direction of that same epoch. A no-op for every other column.
+    if ~any(strcmp(key, {'p:checksX', 'p:checksY'})), return; end
+    flat = local_flattenEpochs(blocks);
+    if row < 1 || row > numel(flat), return; end
+    e = local_findEntry(reg, blocks(1).fnName);
+    if ~local_hasChecksXY(e), return; end
+    if strcmp(key, 'p:checksX')
+        x = double(local_paramValue(e, flat(row).params, 'checksX'));
+        blocks = local_applyCellEdit(reg, blocks, row, 'p:checksY', local_checksYFromX(x));
+    else
+        y = double(local_paramValue(e, flat(row).params, 'checksY'));
+        blocks = local_applyCellEdit(reg, blocks, row, 'p:checksX', local_checksXFromY(y));
+    end
+end
+
+
 % ---------- protocol table: one row per EPOCH (blocks are the run-time grouping) ----------
 
 function [cols, widths, editable, keys] = local_epochTableSpec(reg, blocks)
@@ -2087,6 +2256,15 @@ function [cols, widths, editable, keys] = local_epochTableSpec(reg, blocks)
                 case 'enum', widths{end+1} = '2x';                      %#ok<AGROW>
                 otherwise,   widths{end+1} = '1x';                      %#ok<AGROW>
             end
+        end
+        if local_hasDuration(e)
+            % the derived "duration (s)" sits right after stimFrames, exactly as in the
+            % parameter panel: type seconds and that epoch's stimFrames follows
+            di       = find(strcmp(cols, 'stimFrames'), 1);
+            cols     = [cols(1:di),     {local_durRowName()}, cols(di+1:end)];
+            widths   = [widths(1:di),   {'1x'},               widths(di+1:end)];
+            keys     = [keys(1:di),     {'dur'},              keys(di+1:end)];
+            editable = [editable(1:di), true,                 editable(di+1:end)];
         end
     else
         cols     = {'Epoch #', 'Stimulus', 'Label', 'Params'};
@@ -2139,6 +2317,11 @@ function rows = local_epochRows(reg, blocks)
             if isfield(flat(i).params, name), v = flat(i).params.(name); else, v = e.params{k, 2}; end
             rows{i, c} = local_valueStr(e.params{k, 3}, v);
             c = c + 1;
+            if strcmp(name, 'stimFrames') && local_hasDuration(e)
+                rr = double(local_paramValue(e, flat(i).params, 'refreshRate'));
+                rows{i, c} = local_valueStr('num', local_durationFromFrames(double(v), rr));
+                c = c + 1;
+            end
         end
     end
 end
@@ -2164,6 +2347,9 @@ function blocks = local_applyCellEdit(reg, blocks, row, key, newVal)
                       char(string(newVal)));
             end
             flat(row).seed = round(v);
+        case 'dur'                                  % derived: seconds -> whole stimFrames
+            rr = double(local_paramValue(e, flat(row).params, 'refreshRate'));
+            flat(row).params.stimFrames = local_framesFromDuration(local_numFrom(newVal), rr);
         otherwise                                   % 'p:<paramName>'
             name = key(3:end);
             r = find(strcmp(e.params(:, 1), name), 1);
@@ -2466,11 +2652,14 @@ function v = getfielddef(s, f, d)
 end
 
 function local_checkRegistry(reg)
+% The FIRST nargin(fn) rows must match the AA function's signature in order; rows
+% BEYOND that are GENERATED-SCRIPT-ONLY parameters (e.g. the checkerboards' checksX /
+% checksY) -- the per-run generated function takes them, the untouched AA file does not.
     for i = 1:numel(reg)
         want = nargin(reg(i).fn);
         got  = size(reg(i).params, 1);
-        assert(want < 0 || want == got, ...
-            'stimRegistry drift: %s takes %d args but the registry lists %d.', reg(i).fn, want, got);
+        assert(want < 0 || got >= want, ...
+            'stimRegistry drift: %s takes %d args but the registry lists only %d.', reg(i).fn, want, got);
     end
 end
 
@@ -2479,7 +2668,7 @@ end
 function selftest()
     reg = stimRegistry();
     local_checkRegistry(reg);
-    fprintf('[selftest] registry: %d stimuli, nargin matches params for all\n', numel(reg));
+    fprintf('[selftest] registry: %d stimuli, params cover each AA signature\n', numel(reg));
 
     g  = local_findEntry(reg, 'AASeededGaussianGreyScaleStimFinal2026');
     ps = struct('mu', 0.5, 'sigma', 0.3, 'flickerHz', 4, 'stimFrames', 600, 'refreshRate', 60);
@@ -2549,6 +2738,46 @@ function selftest()
     assert(ps5.stimFrames == 900 && ps5.refreshRate == 90, 'the synced frame count is what gets run');
     fprintf('[selftest] duration <-> stimFrames stay redundant through refreshRate\n');
 
+    % ---- optional checksX <-> checksY auto-derivation (square on the wall) ----
+    cb = local_findEntry(reg, 'AASeededGaussianCheckerboardGreyScaleStimFinal');
+    assert(local_hasChecksXY(cb) && ~local_hasChecksXY(g) && ~local_hasChecksXY(j), ...
+        'only the checkerboards expose checksX/checksY');
+    cs = loadRigConfig('canvas_size', [912 1140]);
+    pa = double(loadRigConfig('pixel_aspect', 2));
+    assert(local_checksYFromX(40) == max(1, round(40 * (double(cs(2)) / double(cs(1))) / pa)), ...
+        'checksY derives from checksX via (H/W) / pixel_aspect');
+    if abs(pa - 2) < 1e-9
+        assert(local_checksYFromX(40) == 25 && local_checksXFromY(25) == 40, ...
+            'registry defaults 40 x 25 are the square-on-the-wall pair at pixel_aspect 2');
+    end
+    assert(local_checksYFromX(0.4) == 1, 'a tiny checksX still derives at least one check row');
+    pcb = struct('mu', 0.5, 'sigma', 0.3, 'flickerHz', 4, 'stimFrames', 600, ...
+                 'refreshRate', 60, 'checksX', 40, 'checksY', 25);
+    rowsC = local_paramRows(cb, pcb);
+    xR = find(strcmp(rowsC(:, 1), 'checksX'), 1);
+    yR = find(strcmp(rowsC(:, 1), 'checksY'), 1);
+    assert(~isempty(xR) && ~isempty(yR), 'the checkerboard panel lists both checks directions');
+    rowsC{xR, 2} = '80';
+    rc = local_syncChecks(cb, rowsC, 'checksX');
+    assert(strcmp(rc{yR, 2}, num2str(local_checksYFromX(80))), 'editing checksX rewrites checksY');
+    rc{yR, 2} = '10';
+    rc2 = local_syncChecks(cb, rc, 'checksY');
+    assert(strcmp(rc2{xR, 2}, num2str(local_checksXFromY(10))), 'editing checksY rewrites checksX');
+    cbBlocks    = local_emptyBlocks();
+    cbBlocks(1) = struct('stimName', cb.name, 'fnName', cb.fn, 'params', pcb, ...
+                         'epochs', 2, 'label', 'cb', 'seeds', [7 8]);
+    cbBlocks = local_applyCellEdit(reg, cbBlocks, 2, 'p:checksX', 80);
+    cbBlocks = local_autoChecksEpoch(reg, cbBlocks, 2, 'p:checksX');
+    flatC = local_flattenEpochs(cbBlocks);
+    assert(flatC(2).params.checksX == 80 && flatC(2).params.checksY == local_checksYFromX(80), ...
+        'the epoch-table twin re-derives the edited epoch''s checksY');
+    assert(flatC(1).params.checksX == 40 && flatC(1).params.checksY == 25, ...
+        'the untouched epoch keeps its own checks pair');
+    cbBlocks = local_autoChecksEpoch(reg, cbBlocks, 2, 'p:sigma');   % non-checks column: no-op
+    flatC2 = local_flattenEpochs(cbBlocks);
+    assert(isequal(flatC2(2).params, flatC(2).params), 'a non-checks edit leaves the pair alone');
+    fprintf('[selftest] auto checks: X <-> Y stay square-on-the-wall through panel and epoch table\n');
+
     % ---- per-epoch seeds: RANDOM auto-assignment, unique within the protocol ----
     blocks    = local_emptyBlocks();
     s3 = local_nextSeeds(blocks, 3);
@@ -2602,14 +2831,18 @@ function selftest()
     gb(1) = struct('stimName', g.name, 'fnName', g.fn, 'params', ps, 'epochs', 3, ...
                    'label', 'ga', 'seeds', [2 3 4]);
     [cols1, ~, ed1, keys1] = local_epochTableSpec(reg, gb);
-    assert(isequal(cols1, {'Epoch #', 'Label', 'seed', 'mu', 'sigma', 'flickerHz', 'stimFrames', 'refreshRate'}), ...
-        'gaussian table: Label + seed + every parameter as its own column');
+    assert(isequal(cols1, {'Epoch #', 'Label', 'seed', 'mu', 'sigma', 'flickerHz', ...
+                           'stimFrames', 'duration (s)', 'refreshRate'}), ...
+        'gaussian table: Label + seed + every parameter + the derived duration column');
     assert(~ed1(1) && all(ed1(2:end)), 'everything but Epoch # is editable');
-    assert(strcmp(keys1{3}, 'seed') && strcmp(keys1{4}, 'p:mu'), 'column keys map edits');
+    assert(strcmp(keys1{3}, 'seed') && strcmp(keys1{4}, 'p:mu') && strcmp(keys1{8}, 'dur'), ...
+        'column keys map edits (duration key = dur)');
     gRows = local_epochRows(reg, gb);
-    assert(isequal(size(gRows), [3 8]) && strcmp(gRows{2, 3}, '3') && ...
-           strcmp(gRows{2, 4}, '0.5') && strcmp(gRows{2, 7}, '600'), ...
-        'rows carry per-epoch seed + parameter cells (text for clean display)');
+    assert(isequal(size(gRows), [3 9]) && strcmp(gRows{2, 3}, '3') && ...
+           strcmp(gRows{2, 4}, '0.5') && strcmp(gRows{2, 7}, '600') && strcmp(gRows{2, 8}, '10'), ...
+        'rows carry per-epoch seed + parameter cells + duration (600/60 = 10 s)');
+    gbd = local_applyCellEdit(reg, gb, 2, 'dur', '5');
+    assert(gbd(2).params.stimFrames == 300, 'a duration edit rewrites that epoch''s stimFrames');
     % edit one epoch's sigma: it splits into its own block, seeds staying put
     gb2 = local_applyCellEdit(reg, gb, 2, 'p:sigma', 0.9);
     assert(numel(gb2) == 3 && gb2(2).params.sigma == 0.9 && ...
@@ -2732,7 +2965,23 @@ function selftest()
            n3.syncB && isequal(n3.masterB, [0.25 0.25 0 0]) && ...
            isequal(n3.final.grid, spec.final.grid), ...
         'band spec (grids + colors + B-lock) round-trips through the experiment JSON');
-    fprintf('[selftest] band spec v2: defaults, v1 conversion, resolution, JSON round-trip\n');
+
+    % ---- preset ASSIGNMENTS: per phase, JSON round-trip, junk tolerated ----
+    assert(all(cellfun(@(k) isfield(def.(k), 'preset') && isempty(def.(k).preset), ...
+        {'pre', 'stim', 'post', 'iti', 'final'})), 'default spec: every phase starts unassigned');
+    spec.pre.preset  = 'macaque s-iso';
+    spec.stim.preset = 'all on 25';
+    opts3 = opts;
+    opts3.phases = spec;
+    [~, o4] = local_jsonToExperiment(reg, local_experimentToJson(blocks, opts3));
+    n4 = local_normalizePhaseSpec(getfielddef(o4, 'phases', []), pr, def);
+    assert(strcmp(n4.pre.preset, 'macaque s-iso') && strcmp(n4.stim.preset, 'all on 25') && ...
+           isempty(n4.iti.preset), 'preset assignments round-trip through the experiment JSON');
+    bad = n4;
+    bad.pre.preset = 42;                          % junk in a hand-edited file
+    n5 = local_normalizePhaseSpec(bad, pr, def);
+    assert(ischar(n5.pre.preset), 'a junk preset field coerces to text (unknown names fall back on load)');
+    fprintf('[selftest] band spec v2: defaults, v1 conversion, resolution, JSON round-trip, presets\n');
 
     % ---- Quick-load slots: JSON round-trip + labels + path resolution ----
     tq = tempname;

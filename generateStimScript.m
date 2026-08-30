@@ -4,7 +4,9 @@ function [fnName, scriptPath] = generateStimScript(entry, phases, stimLeds, outD
 %   [fnName, scriptPath] = generateStimScript(entry, phases, stimLeds, outDir)
 %
 %   entry    : a stimRegistry() entry (.fn/.params/.kind/.iso/.checks). The generated
-%              function has the SAME positional signature as entry.fn, so runExperiment's
+%              function takes entry.params IN ORDER: the first nargin(entry.fn) of them
+%              are the AA function's own signature; any extra rows (the checkerboards'
+%              checksX / checksY) exist ONLY on the generated function. runExperiment's
 %              protocol machinery (args, per-epoch seed auto-increment) is unchanged --
 %              and its stimulus segment reproduces entry.fn's presentation EXACTLY
 %              (same RNG draws, same lcGammaCorrect linearization, same s.frame-indexed
@@ -31,9 +33,9 @@ function [fnName, scriptPath] = generateStimScript(entry, phases, stimLeds, outD
 %
 % DIAMOND-PIXEL GEOMETRY: the DLP4500 canvas is 912 x 1140, but each canvas pixel lands
 % pixel_aspect x wider than tall on the wall (2.0 from the diamond DMD geometry -> a
-% 16:10 image). Generated checkerboards therefore DERIVE checksY so checks are square on
-% the screen (40 x 25 at the rig, not the old stretched 40 x 32), and the jitter circle
-% gets radiusY = radius * pixel_aspect so it is round. rig_config `pixel_aspect` tunes it.
+% 16:10 image). Checkerboard geometry is SETTABLE (checksX x checksY arguments; registry
+% defaults 40 x 25 = square-on-the-wall at pixel_aspect 2), and the jitter circle gets
+% radiusY = radius * pixel_aspect so it is round. rig_config `pixel_aspect` tunes it.
 %
 % The generated file is plain readable MATLAB with the whole plan in its header -- open it
 % to see exactly what was presented.
@@ -192,6 +194,10 @@ function txt = local_emit(entry, P, stimLeds, fnName)
             add('    if nargin < 3 || isempty(sigma),       sigma       = 0.3;             end');
             add('    if nargin < 4 || isempty(flickerHz),   flickerHz   = 4;               end');
             add('    if nargin < 5 || isempty(stimFrames),  stimFrames  = 10 * refreshRate; end');
+            if size(entry.params, 1) >= 8      % checkerboard: settable checksX x checksY
+                add('    if nargin < 7 || isempty(checksX),     checksX     = %s;              end', m(entry.params{7, 2}));
+                add('    if nargin < 8 || isempty(checksY),     checksY     = %s;              end', m(entry.params{8, 2}));
+            end
         case 'jitter'
             add('    if nargin < 6 || isempty(refreshRate),  refreshRate  = 60;          end');
             add('    if nargin < 5 || isempty(stimFrames),   stimFrames   = 10 * refreshRate; end');
@@ -405,6 +411,13 @@ function local_emitGauss(add, entry, m)
     if isequal(entry.checks, [1 1])
         add('    checksX = 1;');
         add('    checksY = 1;');
+    elseif size(entry.params, 1) >= 8
+        add('    %% checkerboard geometry from the checksX / checksY ARGUMENTS (settable per');
+        add('    %% epoch in the GUI). The registry defaults, 40 x 25, are square-on-the-wall');
+        add('    %% at pixel_aspect 2; for square checks at another width use');
+        add('    %% checksY ~ checksX * (H/W) / pixel_aspect.');
+        add('    checksX = max(1, round(checksX));');
+        add('    checksY = max(1, round(checksY));');
     else
         add('    checksX = %s;', m(entry.checks(1)));
         add('    %% checksY is DERIVED so the checks are SQUARE ON THE WALL, not on the canvas:');

@@ -1,0 +1,45 @@
+{
+  "format": "neitz-quickload/1",
+  "slots": [
+    {
+      "name": "s-iso guassian cb test",
+      "file": "experiment_test4.json"
+    },
+    {
+      "name": "s-iso full field",
+      "file": "experiment_s-iso full field.json"
+    },
+    {
+      "name": "white gaussian noise",
+      "file": "experiment_white_gaussian_noise_test.json"
+    },
+    {
+      "name": "white gaussian diff leds",
+      "file": "experiment_white_but_s-iso_leds.json"
+    },
+    {
+      "name": "s cb 50x38 squares",
+      "file": "exp-s-checkerboard_50x38ysquares.json"
+    },
+    {
+      "name": "",
+      "file": ""
+    },
+    {
+      "name": "",
+      "file": ""
+    },
+    {
+      "name": "",
+      "file": ""
+    },
+    {
+      "name": "",
+      "file": ""
+    },
+    {
+      "name": "",
+      "file": ""
+    }
+  ]
+}

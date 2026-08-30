@@ -43,8 +43,13 @@ function reg = stimRegistry()
              'flickerHz', 4, 'num'; 'stimFrames', 600, 'num'; 'refreshRate', 60, 'num'};
     reg(end+1) = entry('Greyscale Gaussian noise (full field)', 'AASeededGaussianGreyScaleStimFinal2026', gauss, 'gauss', false, [1 1]);
     reg(end+1) = entry('S-cone-iso Gaussian noise (full field)', 'AASeededGaussianSConeIsoStimFinal2026', gauss, 'gauss', true, [1 1]);
-    reg(end+1) = entry('Greyscale Gaussian checkerboard', 'AASeededGaussianCheckerboardGreyScaleStimFinal', gauss, 'gauss', false, [40 32]);
-    reg(end+1) = entry('S-cone-iso Gaussian checkerboard', 'AASeededGaussianCheckerboardSConeIsoStimFinal', gauss, 'gauss', true, [40 32]);
+    % Checkerboards take TWO extra, generated-script-only arguments (beyond the AA
+    % signature): the board is checksX x checksY squares, fully settable. The defaults
+    % 40 x 25 are square-on-the-wall at pixel_aspect 2 (912 x 1140 diamond DMD); if you
+    % change checksX and want square checks, checksY ~ checksX * (1140/912) / pixel_aspect.
+    check = [gauss; {'checksX', 40, 'num'; 'checksY', 25, 'num'}];
+    reg(end+1) = entry('Greyscale Gaussian checkerboard', 'AASeededGaussianCheckerboardGreyScaleStimFinal', check, 'gauss', false, [40 32]);
+    reg(end+1) = entry('S-cone-iso Gaussian checkerboard', 'AASeededGaussianCheckerboardSConeIsoStimFinal', check, 'gauss', true, [40 32]);
 
     jit = entry('Jittering circle', 'AAJitteringCircleStimulusFinal', ...
         {'rfCenter', [570 456], 'vec2'; 'rfRadius', 80, 'num'; 'circleRadius', 150, 'num'; ...

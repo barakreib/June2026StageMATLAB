@@ -139,6 +139,26 @@ function test_generator()
         'zero phases: frame 0 is the first stimulus frame (all three bar segments lit)');
     stageClientShared('set', []);
     fprintf('  ok  zero-length phases collapse to the bare stimulus\n');
+
+    % ---- checkerboard geometry is SETTABLE: explicit checksX/checksY reach the board ----
+    ec  = reg(strcmp({reg.fn}, 'AASeededGaussianCheckerboardGreyScaleStimFinal'));
+    gfn = generateStimScript(ec, phases, mainGrid, genDir);
+    fake = FakeStageClient();
+    fake.canvas = [W H];
+    fake.durationS = total / refresh;
+    fake.flipDurations = repmat(1 / refresh, 1, total - 1);
+    stageClientShared('set', fake);
+    feval(gfn, seed, mu, sigma, flickerHz, stimFrames, refresh, 8, 5);
+    p = fake.lastPlayer.presentation;
+    st = struct('frame', preFrames, 'frameRate', refresh, 'time', preFrames / refresh);
+    cellfun(@(c) c.evaluate(st), p.controllers);
+    assert(isequal(size(p.stimuli{1}.imageMatrix), [5 8 3]), ...
+        'an explicit 8 x 5 board draws a 5 x 8 x 3 image');
+    blk = local_lastBlock(td);
+    assert(blk.params.checks_x == 8 && blk.params.checks_y == 5, ...
+        'the manifest records the settable board size');
+    stageClientShared('set', []);
+    fprintf('  ok  checkerboard checksX/checksY are settable arguments\n');
 end
 
 

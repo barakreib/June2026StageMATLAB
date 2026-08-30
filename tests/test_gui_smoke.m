@@ -68,8 +68,9 @@ function test_gui_smoke()
     assert(isequal(cellfun(@str2double, proto.Data(:, 1))', 1:5), 'rows are numbered 1..5');
     % single-stimulus protocol: one editable column per parameter + Label + per-epoch seed
     assert(isequal(proto.ColumnName(:)', ...
-        {'Epoch #', 'Label', 'seed', 'mu', 'sigma', 'flickerHz', 'stimFrames', 'refreshRate'}), ...
-        'gaussian protocol: Label + seed + every parameter as its own column');
+        {'Epoch #', 'Label', 'seed', 'mu', 'sigma', 'flickerHz', 'stimFrames', ...
+         'duration (s)', 'refreshRate'}), ...
+        'gaussian protocol: Label + seed + every parameter + derived duration column');
     muCol = find(strcmp(proto.ColumnName, 'mu'), 1);
     sfCol = find(strcmp(proto.ColumnName, 'stimFrames'), 1);
     sdCol = find(strcmp(proto.ColumnName, 'seed'), 1);
@@ -118,6 +119,15 @@ function test_gui_smoke()
     assert(isequal(cellfun(@str2double, proto.Data(:, sdCol))', seedsBefore), ...
         'every epoch kept its own seed through the bulk edit');
     assert(isequal(proto.Selection(:)', [1 2]), 'the selection survives the update');
+
+    % ---- duration (s) column: derived per epoch, and editable (rewrites stimFrames) ----
+    durCol = find(strcmp(proto.ColumnName, 'duration (s)'), 1);
+    assert(strcmp(proto.Data{1, durCol}, '2') && strcmp(proto.Data{3, durCol}, '5'), ...
+        'duration = stimFrames / refreshRate per epoch (180/90 = 2, 450/90 = 5)');
+    evt = struct('Indices', [6 durCol], 'NewData', '1');
+    proto.CellEditCallback(proto, evt);
+    assert(strcmp(proto.Data{6, sfCol}, '90') && strcmp(proto.Data{6, durCol}, '1'), ...
+        'typing a duration rewrites that epoch''s stimFrames (1 s at 90 Hz = 90)');
 
     % ---- last-used parameters are remembered PER STIMULUS TYPE ----
     lst.Value = 'Greyscale full-field flicker';
