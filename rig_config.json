@@ -15,7 +15,7 @@
     0
   ],
   "led_port": "COM3",
-  "debug_values_csv": true,
+  "debug_values_csv": false,
   "gamma": 1.9949,
   "gamma_model": "lut-pchip",
   "gamma_source": "calibrateDlpResponse 2026-07-14: 15 levels; pchip LUT (LOO med 4.0%, max 173.9%); best parametric two-power mix max err 33%; equiv gamma 1.995",
