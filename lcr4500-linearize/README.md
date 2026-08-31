@@ -307,6 +307,49 @@ given physical USB port, changed the moment the cable moves ports.
 **Pin each unit by a path substring and label the USB ports** (STIM / MON).
 No `--device` = first unit, exactly the single-projector behavior.
 
+### Projector on a different machine — `lcr_agent.py`
+
+When the LightCrafter's USB is plugged into another computer (the rig case:
+the projector hangs off the Stage-server box, MATLAB runs on the client),
+run the agent on the machine that has the USB:
+
+```
+13-start-agent.bat            listens on TCP 5676 (own socket -- it never
+                              touches the wake listener 5677 or Stage 5678)
+```
+
+One request line per connection (`ping` / `list` / `query` / `require` /
+`ensure`, each optionally `--device SEL`); the reply is ensure_linear.py's
+exact output plus a final `EXIT=<n>` line, so remote callers parse the same
+thing local ones do. Arguments are whitelisted — the agent runs nothing it
+does not recognize — and requests are served one at a time (the projector
+is a single HID endpoint).
+
+Setup on the projector machine, once:
+1. `setup.bat` (venv + hidapi) if `.venv` is not already there.
+2. Allow inbound TCP 5676 in Windows Firewall.
+3. Start at logon (mirrors the Stage wake listener's task), elevated PowerShell:
+   ```powershell
+   $action  = New-ScheduledTaskAction -Execute '<toolkit>\13-start-agent.bat'
+   $trigger = New-ScheduledTaskTrigger -AtLogOn
+   Register-ScheduledTask -TaskName 'LcrGammaAgent' -Action $action -Trigger $trigger
+   ```
+
+On the MATLAB side nothing changes but configuration: give that projector's
+`rig_config.json` entry `"transport": "stage-agent"` (plus optional
+`"host"` — defaults to `stage_host` — and `"port"`, default 5676), and
+`lcProjectorState` / the run bracket / the GUI's Check button all go over
+the network instead of the local USB. Agent code lives HERE, next to
+`lcr4500.py`, so protocol and toolkit can never drift apart; only the
+scheduled-task hook belongs to the machine's startup config
+(`stage.server.update`).
+
+Firmware / TI software installers (GUI, JTAG, DLPR350 PROM) are parked at
+`D:\share\lcr4500-linearize\lc4500-fw-sw\` on the rig share — 159 MB of
+zips, deliberately NOT in this git repo. Flashing is the do-not-go-here
+zone (README §Risk); they are kept only so a bricked-GUI reinstall never
+depends on ti.com.
+
 ### From MATLAB
 
 ```matlab
