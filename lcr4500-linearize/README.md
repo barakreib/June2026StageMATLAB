@@ -224,6 +224,47 @@ with your eyes.
 
 ---
 
+## When the image is wrong in a way gamma cannot explain
+
+De-gamma is a single 1-D transfer curve. It has no per-channel or colour-path
+involvement whatsoever, so it **cannot** desaturate the image, shift a hue, or
+turn a colour projector monochrome. If that is what you are seeing, the cause
+is elsewhere in the video path.
+
+```
+9-diagnose.bat
+```
+
+Read-only dump of every register that affects what leaves the projector:
+display mode, input source and bit depth, pixel data format, CSC attribute,
+port clock, gamma, LED enable state, LED drive currents, and sequencer status.
+It then interprets what it found and names the likely fault.
+
+**The usual culprit for "everything comes out grey".** In video mode the DMD
+displays the red, green and blue bit planes in sequence and the *sequencer*
+strobes the matching LED for each sub-frame. That time-multiplexing is what
+makes a colour image. If LED Enable Outputs is switched from sequencer control
+to MANUAL with all three LEDs held on, every sub-frame is lit white — the
+projector sums R+G+B into one grey image, and a yellow stimulus comes out
+white. Nothing in this package writes that register, but the TI GUI's LED
+Driver Control panel does.
+
+```
+10-leds-auto.bat
+```
+
+Writes `0x08` to LED Enable Outputs, restoring sequencer control (the reset
+default). Gamma is a separate register and is untouched, so **you keep the
+linear response and get colour back.** This never writes LED drive currents —
+that is the command TI attaches a damage warning to.
+
+**A faster check needing no software at all:** open `4-ramp.bat` and press `c`
+to cycle white → red → green → blue. If the red field projects as white rather
+than red, the LEDs are not being sequenced and the diagnosis above is
+confirmed in about five seconds.
+
+---
+
 ## Making it stick
 
 The bypass is volatile and reverts on every projector power cycle, and the TI
@@ -334,6 +375,10 @@ analysis/log_measurements.py   interactive CSV logger
 analysis/check_linearity.py    least-squares fit, residuals, exponent, plot
 data/                          your CSVs land here
 
+diagnose.py                    read-only dump of the whole video path
+leds.py                        LED enable state; restore sequencer control
+9-diagnose.bat                 run the diagnostic
+10-leds-auto.bat               give the LEDs back to the sequencer
 ensure_linear.py               apply + verify, reports via exit code
 watch_linear.py                re-applies the bypass if it ever reverts
 7-watch-linear.bat             run the watcher

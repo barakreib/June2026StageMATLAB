@@ -52,6 +52,29 @@ CMD_MAIN_STATUS = (0x1A, 0x0C)
 CMD_GAMMA = (0x1A, 0x0E)
 CMD_DISPLAY_MODE = (0x1A, 0x1B)
 CMD_INPUT_SOURCE = (0x1A, 0x00)
+CMD_PIXEL_FORMAT = (0x1A, 0x02)
+CMD_PORT_CLOCK = (0x1A, 0x03)
+CMD_CSC_INPUT = (0x1A, 0x0D)
+CMD_LED_ENABLE = (0x1A, 0x07)
+CMD_LED_CURRENT = (0x0B, 0x01)
+CMD_TESTPATTERN = (0x12, 0x03)
+
+SRC_PARALLEL = 0
+SRC_TESTPATTERN = 1
+
+TEST_PATTERNS = {
+    "solid": 0x0,
+    "hramp": 0x1,
+    "vramp": 0x2,
+    "hlines": 0x3,
+    "diaglines": 0x4,
+    "vlines": 0x5,
+    "grid": 0x6,
+    "checker": 0x7,
+    "rgbramp": 0x8,
+    "colorbars": 0x9,
+    "stepbars": 0xA,
+}
 
 
 class DeviceNotFound(Exception):
@@ -215,11 +238,61 @@ class LCr4500:
         return "pattern" if (self.read(CMD_DISPLAY_MODE)[0] & 0x01) else "video"
 
     def input_source(self):
-        v = self.read(CMD_INPUT_SOURCE)[0] & 0x07
-        return {0: "parallel (HDMI / 30-bit RGB)",
-                1: "internal test pattern",
-                2: "flash",
-                3: "FPD-link"}.get(v, f"unknown ({v})")
+        b = self.read(CMD_INPUT_SOURCE)[0]
+        src = {0: "parallel (HDMI)", 1: "internal test pattern",
+               2: "flash", 3: "FPD-link"}.get(b & 0x07, f"unknown ({b & 0x07})")
+        depth = {0: "30 bit", 1: "24 bit", 2: "20 bit", 3: "16 bit",
+                 4: "10 bit", 5: "8 bit"}.get((b >> 3) & 0x07, "?")
+        return f"{src}, parallel bit depth {depth}"
+
+    def pixel_format(self):
+        v = self.read(CMD_PIXEL_FORMAT)[0] & 0x0F
+        return {0: "RGB 4:4:4 (30 bit)", 1: "YCrCb 4:4:4 (30 bit)",
+                2: "YCrCb 4:2:2"}.get(v, f"unknown ({v})")
+
+    def csc_input(self):
+        v = self.read(CMD_CSC_INPUT)[0] & 0x03
+        return {0: "RGB 4:4:4", 1: "YCrCb 4:4:4",
+                2: "YCrCb 4:2:2"}.get(v, f"unknown ({v})")
+
+    def port_clock(self):
+        return self.read(CMD_PORT_CLOCK)[0] & 0x07
+
+    def led_enable(self):
+        """LED Enable Outputs. Reset default is 0x08 = sequencer controlled."""
+        b = self.read(CMD_LED_ENABLE)[0]
+        return {
+            "raw": b,
+            "sequencer_controlled": bool(b & 0x08),
+            "red": bool(b & 0x01),
+            "green": bool(b & 0x02),
+            "blue": bool(b & 0x04),
+        }
+
+    def set_led_sequencer(self):
+        """Hand the LEDs back to the sequencer (the power-on default, 0x08).
+
+        Does NOT touch LED drive currents -- that is the command TI puts a
+        damage warning on, and nothing here writes to it.
+        """
+        self.write(CMD_LED_ENABLE, [0x08])
+        return self.led_enable()
+
+    def set_input_source(self, source, bit_depth_bits=None):
+        """source: 0 = parallel/HDMI, 1 = internal test pattern.
+
+        Preserves the existing parallel bit-depth field unless told otherwise.
+        """
+        current = self.read(CMD_INPUT_SOURCE)[0]
+        depth = current & 0x38 if bit_depth_bits is None else (bit_depth_bits << 3) & 0x38
+        self.write(CMD_INPUT_SOURCE, [(source & 0x07) | depth])
+
+    def set_test_pattern(self, pattern):
+        self.write(CMD_TESTPATTERN, [pattern & 0x0F])
+
+    def led_currents(self):
+        raw = self.read(CMD_LED_CURRENT, 3)
+        return {"red": raw[0], "green": raw[1], "blue": raw[2]}
 
 
 def describe_gamma(byte):

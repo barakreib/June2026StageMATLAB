@@ -16,6 +16,7 @@ Keys
     Right / Left       next / previous step in the measurement sequence
     Home / End         0 / 255
     digits then Enter  jump to a level
+    s                  split view: red | green | blue | white bars at once
     c                  cycle channel: white -> red -> green -> blue
     h                  hide / show the on-screen readout
     Esc                quit
@@ -66,6 +67,8 @@ class Ramp:
                             fg="#00ff00", bg="black", justify="left")
         self.hud.place(x=8, y=8)
 
+        self.split = False
+
         for key, fn in (
             ("<Up>", lambda e: self.step(1)),
             ("<Down>", lambda e: self.step(-1)),
@@ -78,13 +81,34 @@ class Ramp:
             ("<Escape>", lambda e: root.destroy()),
             ("<Key-c>", lambda e: self.cycle_channel()),
             ("<Key-h>", lambda e: self.toggle_hud()),
+            ("<Key-s>", lambda e: self.toggle_split()),
             ("<Return>", lambda e: self.commit_typed()),
         ):
-            root.bind(key, fn)
-        root.bind("<Key>", self.on_key)
+            root.bind_all(key, fn)
+        root.bind_all("<Key>", self.on_key)
+
+        # An overrideredirect window is not managed by the window manager and
+        # can fail to take keyboard focus on Windows. Grab it explicitly, and
+        # again whenever the field is clicked.
+        self.canvas.bind("<Button-1>", lambda e: self._grab_focus())
+        root.bind("<Configure>", lambda e: self.redraw())
+        root.after(120, self._grab_focus)
 
         self.typed = ""
         self.redraw()
+
+    def _grab_focus(self):
+        try:
+            self.root.focus_force()
+            self.canvas.focus_set()
+        except Exception:
+            pass
+
+    def toggle_split(self):
+        self.split = not self.split
+        self.redraw()
+        print(f"split view {'ON  (R | G | B | white bars)' if self.split else 'OFF'}",
+              flush=True)
 
     # -- input -------------------------------------------------------
     def on_key(self, event):
@@ -134,16 +158,32 @@ class Ramp:
         return r, g, b
 
     def redraw(self):
+        self.canvas.delete("bars")
         r, g, b = self.rgb()
         colour = f"#{r:02x}{g:02x}{b:02x}"
-        self.canvas.configure(bg=colour)
+
+        if self.split:
+            v = self.level
+            bars = [(v, 0, 0), (0, v, 0), (0, 0, v), (v, v, v)]
+            w = max(self.canvas.winfo_width(), 4)
+            h = max(self.canvas.winfo_height(), 4)
+            self.canvas.configure(bg="black")
+            for i, (br, bg_, bb) in enumerate(bars):
+                self.canvas.create_rectangle(
+                    i * w / 4, 0, (i + 1) * w / 4, h,
+                    fill=f"#{br:02x}{bg_:02x}{bb:02x}", width=0, tags="bars")
+        else:
+            self.canvas.configure(bg=colour)
+
         if self.hud_visible:
             pending = f"  typing:{self.typed}" if self.typed else ""
             self.hud.configure(
                 text=f"level {self.level:3d}   rgb({r},{g},{b})   "
                      f"{CHANNELS[self.channel]}   step "
                      f"{self.seq_index + 1}/{len(SEQUENCE)}{pending}\n"
-                     f"[h] hide  [Esc] quit")
+                     f"{'SPLIT: R | G | B | white' if self.split else ''}"
+                     f"{'  ' if self.split else ''}"
+                     f"[c] channel  [s] split  [h] hide  [Esc] quit")
             self.hud.lift()
         else:
             self.hud.configure(text="")
@@ -161,7 +201,10 @@ def main():
 
     root = tk.Tk()
     Ramp(root, args)
-    print("Ramp window open. Arrow keys change level; Esc quits.", flush=True)
+    print("Ramp window open. CLICK THE PROJECTED FIELD ONCE to give it keyboard\n"
+          "focus, then: [s] split R|G|B|white  [c] cycle channel  arrows = level\n"
+          "Every change is echoed here, so this console is the source of truth\n"
+          "for what is actually being sent.", flush=True)
     root.mainloop()
     return 0
 
