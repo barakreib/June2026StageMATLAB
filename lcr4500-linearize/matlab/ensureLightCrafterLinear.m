@@ -12,45 +12,73 @@ function info = ensureLightCrafterLinear(varargin)
 %   and a session of quietly gamma-encoded data.
 %
 %   info = ensureLightCrafterLinear() returns a struct:
-%       .linear   logical, always true if this returned without erroring
-%       .gamma    the gamma register value, e.g. 0
-%       .changed  true if the bypass had to be applied just now
-%       .mode     'video' or 'pattern'
+%       .linear      logical, always true if this returned without erroring
+%       .gamma       the gamma register value, e.g. 0
+%       .changed     true if the bypass had to be applied just now
+%       .mode        'video' or 'pattern' ('' when it could not be read)
+%       .reachable   logical, the toolkit talked to the projector
+%       .exitStatus  raw exit code from ensure_linear.py
 %
-%   ensureLightCrafterLinear('require', true) verifies WITHOUT writing, and
-%   errors if the projector is not already linear. Use this to assert state
-%   part-way through a long session, or immediately after a run, to prove
-%   the register held for the whole thing.
+%   Name-value options:
+%       'require'  verify WITHOUT writing; error if not already linear.
+%                  Use to assert state after a run, proving the register
+%                  held the whole time.
+%       'query'    read-only state report that NEVER throws about the
+%                  projector's state: exit codes 0 (linear), 1 (not linear)
+%                  and 2 (unreachable) all return the info struct -- branch
+%                  on .reachable/.linear/.mode yourself. Only a toolkit
+%                  problem (missing script, bad usage) still errors.
+%                  Mutually exclusive with 'require'.
+%       'device'   selector when more than one LC4500 is attached: an
+%                  index, an exact serial number, or a case-insensitive
+%                  substring of the HID path. Empty = first device.
+%       'root'     toolkit folder, when not auto-detected.
 %
 %   Example
-%       ensureLightCrafterLinear();              % at experiment start
+%       ensureLightCrafterLinear('device', '7&2b9a1c');   % at run start
 %       ... run the experiment ...
-%       ensureLightCrafterLinear('require',true) % prove it held
+%       s = ensureLightCrafterLinear('device', '7&2b9a1c', 'query', true);
+%       if ~(s.reachable && s.linear), warning('state did not hold'); end
 %
-%   Errors thrown:
-%       LCr4500:notLinear     bypass would not take
+%   Errors thrown (never for 'query' state outcomes):
+%       LCr4500:notLinear     bypass would not take / --require unmet
 %       LCr4500:unreachable   projector off, unplugged, or GUI has the handle
-%       LCr4500:toolkit       the Python toolkit could not be located
+%       LCr4500:toolkit       the Python toolkit could not be located or
+%                             was called incorrectly
 
 p = inputParser;
 p.addParameter('require', false, @(x) islogical(x) || isnumeric(x));
-p.addParameter('root', '', @ischar);
+p.addParameter('query',   false, @(x) islogical(x) || isnumeric(x));
+p.addParameter('device',  '',    @(x) ischar(x) || isstring(x));
+p.addParameter('root',    '',    @ischar);
 p.parse(varargin{:});
 requireOnly = logical(p.Results.require);
+queryOnly   = logical(p.Results.query);
+device      = char(p.Results.device);
 
-% ---- locate the toolkit (this file lives in <root>\matlab) --------------
+if requireOnly && queryOnly
+    error('LCr4500:toolkit', ...
+        '''require'' and ''query'' are mutually exclusive.');
+end
+
+% ---- locate the toolkit (this file lives in <root>/matlab) --------------
 if isempty(p.Results.root)
     root = fileparts(fileparts(mfilename('fullpath')));
 else
     root = p.Results.root;
 end
 
-pyExe  = fullfile(root, '.venv', 'Scripts', 'python.exe');
-script = fullfile(root, 'ensure_linear.py');
-
-if ~isfile(pyExe)
-    pyExe = 'python';   % fall back to whatever is on PATH
+% The checked-in .venv is a WINDOWS venv; on other platforms its
+% Scripts/python.exe exists as a file but is not runnable here.
+if ispc
+    pyExe = fullfile(root, '.venv', 'Scripts', 'python.exe');
+    if ~isfile(pyExe), pyExe = 'python'; end
+else
+    pyExe = fullfile(root, '.venv', 'bin', 'python');
+    if ~isfile(pyExe), pyExe = 'python3'; end
 end
+
+script = fullfile(root, 'ensure_linear.py');
 if ~isfile(script)
     error('LCr4500:toolkit', ...
         ['Could not find ensure_linear.py under:\n  %s\n' ...
@@ -63,25 +91,29 @@ end
 cmd = sprintf('"%s" "%s"', pyExe, script);
 if requireOnly
     cmd = [cmd ' --require'];
+elseif queryOnly
+    cmd = [cmd ' --query'];
+end
+if ~isempty(device)
+    cmd = sprintf('%s --device "%s"', cmd, device);
 end
 
 [status, out] = system(cmd);
 
 % ---- parse the machine-readable line ------------------------------------
-info = struct('linear', false, 'gamma', NaN, 'changed', false, 'mode', '');
-
-tok = regexp(out, 'GAMMA=0x([0-9A-Fa-f]{2})\s+LINEAR=(\d)\s+CHANGED=(\d)', 'tokens', 'once');
-if ~isempty(tok)
-    info.gamma   = hex2dec(tok{1});
-    info.linear  = str2double(tok{2}) == 1;
-    info.changed = str2double(tok{3}) == 1;
-end
-mtok = regexp(out, 'MODE=(\w+)', 'tokens', 'once');
-if ~isempty(mtok)
-    info.mode = mtok{1};
-end
+info = parseLcrLine(out);
+info.exitStatus = status;
+info.reachable  = (status == 0 || status == 1);
 
 % ---- verdict ------------------------------------------------------------
+if queryOnly
+    if info.reachable || status == 2
+        return;                       % state outcomes never throw on query
+    end
+    error('LCr4500:toolkit', ...
+        'ensure_linear.py --query failed (exit %d):\n%s', status, strtrim(out));
+end
+
 switch status
     case 0
         if info.changed
@@ -98,6 +130,9 @@ switch status
             ['Cannot reach the LightCrafter 4500.\n%s\n' ...
              'Check power and the mini-USB cable, and close the TI Control ' ...
              'Software if it is open.'], strtrim(out));
+    case 3
+        error('LCr4500:toolkit', ...
+            'ensure_linear.py rejected its arguments (exit 3):\n%s', strtrim(out));
     otherwise
         error('LCr4500:notLinear', ...
             ['The LightCrafter 4500 is NOT linear -- refusing to continue.\n%s'], ...

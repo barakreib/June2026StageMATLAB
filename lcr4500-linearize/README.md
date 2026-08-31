@@ -278,19 +278,34 @@ close that hole.
 8-verify-linear.bat                             double-click version
 .venv\Scripts\python.exe ensure_linear.py       apply if needed, verify
 .venv\Scripts\python.exe ensure_linear.py --require   verify only, never write
+.venv\Scripts\python.exe ensure_linear.py --query     read-only report, never write
+.venv\Scripts\python.exe ensure_linear.py --list      list attached units
 ```
 
 Applies the bypass if it isn't set, then verifies two independent ways — the
 register read-back *and* the gamma bit in Main Status — and reports through
 its **exit code**: `0` verified linear, `1` not linear, `2` projector
-unreachable. It always prints one parseable line:
+unreachable, `3` bad usage. It always prints one parseable line:
 
 ```
 LCR4500 GAMMA=0x00 LINEAR=1 CHANGED=0 MODE=video
 ```
 
-Use plain mode at the start of a run and `--require` at the end, to prove the
-register held for the whole session.
+Use plain mode at the start of a run and `--require` (or the read-only
+`--query`) at the end, to prove the register held for the whole session.
+
+### Two projectors on one machine — `--device`
+
+With more than one LC4500 attached, every entry point (`ensure_linear.py`,
+`gamma.py`, `info.py`, `diagnose.py`) takes `--device SEL` to pick one:
+an **index** (into the `--list` order), an **exact serial number**, or a
+case-insensitive **substring of the HID path**. A selector matching zero or
+several units is a loud error, never a guess — LC4500s frequently report
+empty or identical serials, so the reliable identity is the **path**, which
+encodes the hub/port chain: stable across reboots and power cycles for a
+given physical USB port, changed the moment the cable moves ports.
+**Pin each unit by a path substring and label the USB ports** (STIM / MON).
+No `--device` = first unit, exactly the single-projector behavior.
 
 ### From MATLAB
 
@@ -306,6 +321,17 @@ It throws `LCr4500:notLinear` or `LCr4500:unreachable` rather than returning a
 flag you might forget to check, so an experiment on a non-linear projector
 stops instead of collecting bad data. `info = ensureLightCrafterLinear()`
 returns `.linear`, `.gamma`, `.changed` and `.mode` if you want to log them.
+It takes `'device', SEL` (see `--device` above) and `'query', true` (the
+read-only mode, which never throws about projector state — branch on the
+returned `.reachable` / `.linear` yourself).
+
+**The stimulus suite does this automatically now.** When `rig_config.json`
+has an `lc_projectors` section, `runExperiment` brackets every run: forces
+each configured projector linear at start (refusing the run if a required one
+won't verify), re-queries at the end, and flags the day's manifest if the
+register reverted mid-run; `lcGammaCorrect` switches between raw values and
+the measured LUT on the verdict (see `lcProjectorState.m` in the repo root).
+The manual calls above remain for standalone scripts and bench work.
 
 ### `watch_linear.py` — cover a mid-session power cycle
 
