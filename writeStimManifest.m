@@ -197,6 +197,9 @@ function b = local_newBlock(record, ctx)
     b.leds   = struct('enabled',   logical(local_getfield(L, 'enabled', false)), ...
                       'mode',      double(local_getfield(L, 'mode', 0)), ...
                       'intensity', local_getfield(L, 'intensity', zeros(4, 3)));
+    % Which gamma regime these epochs were presented under (runExperiment's projector
+    % bracket verifies it at run start; 'unknown' = standalone run, no bracket).
+    b.projector_linearity = ctx.projector_linearity;
     b.params = local_blockParams(record);
     b.epochs = {};
 end
@@ -235,7 +238,8 @@ end
 function ctx = local_sessionContext()
 % Read the session context runExperiment/stimulusGUI publish, with a standalone fallback.
     ctx = struct('cell_name', '', 'block_index', [], 'block_label', '', ...
-                 'leds', struct('enabled', false));
+                 'leds', struct('enabled', false), ...
+                 'projector_linearity', struct('state', 'unknown'));
     try
         c = evalin('base', 'neitzSessionContext');
         if isstruct(c)
@@ -243,6 +247,8 @@ function ctx = local_sessionContext()
             ctx.block_index = local_getfield(c, 'block_index', []);
             ctx.block_label = char(string(local_getfield(c, 'block_label', '')));
             ctx.leds        = local_getfield(c, 'leds', struct('enabled', false));
+            ctx.projector_linearity = local_getfield(c, 'projector_linearity', ...
+                                                     struct('state', 'unknown'));
         end
     catch
         % no context published -> standalone run

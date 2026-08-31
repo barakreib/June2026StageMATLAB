@@ -198,6 +198,38 @@ the rig is the *physical* phase behavior:
    whether its true peak is 545 or 565 nm while you're at it (the presets disagree with
    the request). With no server running, launch just notes it in the status line.
 
+## §11 — Projector gamma bracket (2026-08-30, force-linear runs)   ☐
+The DLPC350's de-gamma is now bypassed over USB (`lcr4500-linearize/`), and
+`runExperiment` brackets every run: at start it forces each projector in rig_config's
+`lc_projectors` linear and verifies (a required one that fails REFUSES the run); at end it
+re-queries the stim projector and a mid-run revert warns loudly + flags the manifest
+(`data_quality_warnings`). `lcGammaCorrect` follows automatically: verified linear → raw
+values; anything else → the measured LUT, exactly as before. No config key = bracket inert.
+
+1. ☐ **Identify the two units**: with both LC4500s plugged in,
+   `.venv\Scripts\python.exe ensure_linear.py --list` → two `DEV` lines. Unplug/replug one
+   to see which path is which. **Label the USB ports** (STIM / MON) — the HID path is
+   stable per physical port, not per unit.
+2. ☐ Pin them in rig_config.json (then `clear loadRigConfig`):
+   `"lc_projectors": {"stim": {"device": "<path-substring>", "required_for_run": true},
+   "monitor": {"device": "<path-substring>", "required_for_run": false}}`
+3. ☐ GUI Run: expect the monitor's `projector` phase line, then
+   `[runExperiment] projector: stim LINEAR (0x00, video); monitor LINEAR ...` before the
+   LED setup. Manifest block gains `projector_linearity.state = "linear"`.
+4. ☐ **Refusal drill**: power-cycle the stim projector, Run → the run must REFUSE only if
+   the bypass cannot be applied (TI GUI open); with the GUI closed it silently re-applies
+   (CHANGED=1) and runs. Unplug its USB → `projectorUnreachable` refusal.
+5. ☐ **Mid-run revert drill**: start a long run, power-cycle the projector mid-run →
+   at run end expect the red `DATA SUSPECT` lines + a `data_quality_warnings` entry in the
+   day's nested manifest.
+6. ☐ **Optical proof (the only real one)**: with a run-started (linear) projector, present
+   0.25/0.5/0.75 full-field and measure — 0.5 must read ~50 %. Integrate ≥0.5 s per
+   reading (PWM + sequential LEDs defeat fast detectors; see LCR4500-HANDOFF §8). This
+   also settles the residual-γ question (handoff open thread 1): if a clean sweep shows a
+   real residual, wire it into the reserved `dlp_residual_lut_*` keys.
+7. ☐ Analysis Suite still imports a manifest carrying the new
+   `projector_linearity` / `data_quality_warnings` fields (additive — should be ignored).
+
 ---
 
 ## Gotchas / quick fixes
@@ -209,6 +241,11 @@ the rig is the *physical* phase behavior:
 - **Manifest lands in `pwd`:** each stimulus writes its row to the current directory; run
   from the day's data folder so the manifest sits with the `.abf` files.
 - **A failed epoch aborts the session** (by design) so no `.abf` is left without its row.
+- **Legacy standalone AA\* scripts after a bracketed run:** a FRESH MATLAB knows nothing
+  about the projector, so `lcGammaCorrect` applies the LUT — but the bracket left the
+  projector LINEAR. Either run through the GUI (the bracket re-verifies) or run
+  `3-degamma-ON-restore.bat` first. The bracket deliberately does NOT restore de-gamma at
+  run end (a session is many runs; flip-flopping the register between them is worse).
 
 ## If a guard fires on import (Analysis side)
 The importer now **refuses** on a row≠recording count mismatch OR a timestamp mismatch,

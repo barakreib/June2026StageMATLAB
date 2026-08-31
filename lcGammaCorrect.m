@@ -47,9 +47,30 @@ function c = lcGammaCorrect(L)
 %   (via loadRigConfig, which caches -- run `clear loadRigConfig` after
 %   recalibrating). Re-derive with calibrateDlpResponse.m (measured LUT,
 %   primary) or calibrateGamma.m (legacy power fit).
+%
+%   PROJECTOR REGIME (Aug 2026): the DLPC350's de-gamma table can be
+%   bypassed over USB (lcr4500-linearize toolkit), making the projector
+%   itself linear. runExperiment's start-of-run bracket verifies that and
+%   records it in lcProjectorState; when the cached regime is 'linear' this
+%   function passes L through untouched -- codes ARE light, and the
+%   measured LUT above (which inverts the DE-GAMMA'D response) would be
+%   wrong to apply. With no bracket, no config, or any doubt, the regime
+%   reads 'degamma' and behavior is exactly as before. The check is a pure
+%   in-process cache lookup: no hardware I/O ever happens here.
+%
+%   Reserved for later: dlp_residual_lut_codes / dlp_residual_lut_output_norm
+%   -- a mild correction for whatever residual nonlinearity a clean
+%   radiometer sweep finds in the bypassed projector. Until that sweep
+%   exists, linear regime = identity.
+
+    L = min(max(L, 0), 1);      % clamp to the valid linear range
+
+    if strcmp(lcProjectorState('regime'), 'linear')
+        c = L;                  % projector verified linear this run
+        return;
+    end
 
     model = char(string(loadRigConfig('gamma_model', 'power')));
-    L = min(max(L, 0), 1);      % clamp to the valid linear range
 
     if strncmpi(model, 'lut', 3)
         codes = loadRigConfig('dlp_lut_codes', []);

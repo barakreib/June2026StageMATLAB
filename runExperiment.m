@@ -74,6 +74,24 @@ function status = runExperiment(protocol, opts)
 %                                fires for a partly-run protocol, so a mistyped run can be
 %                                thrown away immediately. Omitted => the waits are plain
 %                                pause() calls, exactly as before.
+%       .projectorCheck  true    LightCrafter gamma bracket. The DLPC350 de-gamma bypass is
+%                                VOLATILE (a projector power cycle or the TI GUI silently
+%                                restores it), so when rig_config.json has `lc_projectors`,
+%                                each configured projector is forced linear + verified BEFORE
+%                                the first epoch (a required one that fails REFUSES the run),
+%                                and the stim projector is re-queried at the END of the run --
+%                                a mid-run revert warns loudly and flags the day's manifest
+%                                (data_quality_warnings). lcGammaCorrect reads the cached
+%                                verdict: verified linear -> raw values, otherwise the
+%                                measured LUT, with no per-stimulus switch anywhere. With no
+%                                `lc_projectors` config the bracket is fully inert (dev
+%                                machines, tests). NOT run on a hard abort: the next run's
+%                                bracket re-establishes state, and the logged epochs carry
+%                                their start-verified state either way.
+%       .projectors      []      override for the `lc_projectors` config (a test seam --
+%                                roles + required_for_run come from here when set)
+%       .projectorStateFn @lcProjectorState   state module handle (a test seam, like
+%                                .ledFactory; leave default at the rig)
 %
 %   status : struct with .cancelled (logical), .epochs (epochs actually presented) and
 %            .blocks. Requesting it is optional; existing callers are unaffected.
@@ -85,7 +103,8 @@ function status = runExperiment(protocol, opts)
     if nargin < 2 || isempty(opts), opts = struct(); end
     d = struct('preStim', 2, 'postStim', 1, 'itp', 3, 'settle', 1, ...
                'triggerAcq', true, 'preflight', true, 'continueOnError', false, ...
-               'seedBase', 2, 'serverTimeout', 10);   % serverTimeout (s): preflight liveness bound
+               'seedBase', 2, 'serverTimeout', 10, ...  % serverTimeout (s): preflight liveness bound
+               'projectorCheck', true);
     fn = fieldnames(d);
     for i = 1:numel(fn)
         if ~isfield(opts, fn{i}) || isempty(opts.(fn{i})), opts.(fn{i}) = d.(fn{i}); end
@@ -145,6 +164,25 @@ function status = runExperiment(protocol, opts)
         return;
     end
 
+    % ---- projector gamma bracket, start half: force linear + verify, or refuse ----
+    % Runs after the Stage pre-flight (the most likely failure still reports first) and
+    % before the LED serial port opens. Each 'ensure' is a 1-2 s system() call; the pair
+    % is not cancellable mid-call, only between.
+    projCfg = getf(opts, 'projectors', []);
+    if isempty(projCfg), projCfg = loadRigConfig('lc_projectors', []); end
+    projFn  = getf(opts, 'projectorStateFn', @lcProjectorState);
+    projOn  = opts.projectorCheck && isstruct(projCfg) && ~isempty(fieldnames(projCfg));
+    projStart = struct('state', 'unknown');
+    if projOn
+        stimProgress('report', struct('phase', 'projector', 'phaseElapsed', 0, 'phaseTotal', 0));
+        projFn('clear');   % a stale verdict from a Ctrl-C'd run must not leak into this one
+        projStart = local_projectorBracket(projCfg, projFn, getf);
+        if local_cancelled(isCancelled)
+            status = local_finish(true, 0, nBlocks, totalEpochs, 'cancelled during the projector check');
+            return;
+        end
+    end
+
     % ---- optional LED-driver setup (additive; darks + closes on ANY exit) ----
     if isfield(opts, 'leds') && isstruct(opts.leds) && getf(opts.leds, 'enabled', false)
         stimProgress('report', struct('phase', 'leds', 'phaseElapsed', 0, 'phaseTotal', 0));
@@ -181,7 +219,7 @@ function status = runExperiment(protocol, opts)
         sa   = getf(blk, 'seedArg', 0);   % index of the seed arg in .args (0 = stimulus takes no seed)
 
         % Tell writeStimManifest which cell/block/LEDs these epochs belong to (nested manifest).
-        local_setContext(sessionCell, b, lbl, sessionLeds);
+        local_setContext(sessionCell, b, lbl, sessionLeds, projStart);
 
         epochsThisBlock = 0;
         for e = 1:nEp
@@ -262,6 +300,33 @@ function status = runExperiment(protocol, opts)
         local_applyBackdrop(phases, 'final', 'end-of-run');
         local_handoffFinalLeds(phases);
         stageClientShared('release');   % free the single-client server for whatever is next
+    end
+
+    % ---- projector gamma bracket, end half: prove the register held for the run ----
+    % Read-only re-query of the stim projector, on normal completion AND on cancel, placed
+    % before the Keep/Discard hook so a revert is on screen while the operator decides. A
+    % power cycle or a TI-GUI session mid-run silently restores de-gamma; every epoch above
+    % would then have been presented in the wrong regime.
+    if projOn && epochCount > 0
+        s2 = projFn('refresh', 'stim');
+        endState = 'degamma';
+        if s2.reachable && s2.linear && strcmp(s2.mode, 'video'), endState = 'linear'; end
+        if ~strcmp(endState, projStart.state)
+            detail = sprintf('start=%s end=%s (reachable=%d gamma_reg=%g mode=%s)', ...
+                projStart.state, endState, s2.reachable, s2.gamma, s2.mode);
+            warning('runExperiment:projectorRevertedMidRun', ...
+                ['The stim projector''s gamma state CHANGED during this run (%s). ' ...
+                 'A power cycle or the TI Control Software reverts the de-gamma ' ...
+                 'bypass silently.'], detail);
+            fprintf(2, ['*** DATA SUSPECT: projector gamma state changed mid-run (%s). ***\n' ...
+                        '*** Every epoch of this run may have been presented in the ' ...
+                        'wrong regime. ***\n'], detail);
+            finalizeStimBlock(pwd, 'warn', struct( ...
+                'type',      'projector_gamma_reverted', ...
+                'detail',    detail, ...
+                'gamma_reg', s2.gamma, ...
+                'mode',      s2.mode));
+        end
     end
 
     % ---- protocol completion hook (the stimulusGUI "stimulus protocol complete" dialog) ----
@@ -380,14 +445,81 @@ function v = subsref_default(s, f, dv)
 end
 
 
-function local_setContext(cellName, blockIndex, label, leds)
-% Publish the current cell/block/LED state to the base workspace so writeStimManifest can
-% nest each trial under day -> cell -> block -> epoch. Constant across a block's epochs.
+function local_setContext(cellName, blockIndex, label, leds, projector)
+% Publish the current cell/block/LED/projector state to the base workspace so
+% writeStimManifest can nest each trial under day -> cell -> block -> epoch. Constant
+% across a block's epochs (a mid-run projector revert is caught by the end bracket and
+% recorded in data_quality_warnings instead).
     assignin('base', 'neitzSessionContext', ...
         struct('cell_name',   char(string(cellName)), ...
                'block_index', blockIndex, ...
                'block_label', char(string(label)), ...
-               'leds',        leds));
+               'leds',        leds, ...
+               'projector_linearity', projector));
+end
+
+
+function ctx = local_projectorBracket(projCfg, projFn, getf)
+% Start half of the projector gamma bracket: 'ensure' (apply the de-gamma bypass and
+% verify it two independent ways) on every configured projector. A required role that
+% cannot be proven linear + video-mode REFUSES the run with a specific error; a
+% non-required one only warns. Returns the manifest context for the stim projector.
+    ctx = struct('state', 'unknown', 'verified_at', '', 'gamma_reg', NaN, ...
+                 'mode', '', 'monitor', 'unconfigured');
+    roles = fieldnames(projCfg);
+    parts = cell(1, numel(roles));
+    for i = 1:numel(roles)
+        role     = roles{i};
+        required = logical(getf(projCfg.(role), 'required_for_run', strcmp(role, 'stim')));
+        s  = projFn('ensure', role);
+        ok = s.reachable && s.linear && strcmp(s.mode, 'video');
+        modeTxt = s.mode;
+        if isempty(modeTxt), modeTxt = 'unknown'; end
+
+        if strcmp(role, 'stim')
+            ctx.gamma_reg = s.gamma;
+            ctx.mode      = s.mode;
+            if ok
+                ctx.state       = 'linear';
+                ctx.verified_at = char(datetime('now', 'Format', 'yyyy-MM-dd''T''HH:mm:ss'));
+            else
+                ctx.state = 'degamma';
+            end
+        elseif strcmp(role, 'monitor')
+            if ok, ctx.monitor = 'linear'; else, ctx.monitor = 'failed'; end
+        end
+
+        if required && ~ok
+            if ~s.reachable
+                error('runExperiment:projectorUnreachable', ...
+                    ['Cannot reach the ''%s'' LightCrafter -- refusing to run. Check ' ...
+                     'power and the mini-USB cable, and close the TI Control Software ' ...
+                     'COMPLETELY (it holds the USB handle and polls).'], role);
+            elseif ~s.linear
+                error('runExperiment:projectorNotLinear', ...
+                    ['The ''%s'' LightCrafter would not verify linear -- refusing to ' ...
+                     'run. Close the TI Control Software if it is open (it pushes the ' ...
+                     'de-gamma setting back) and retry.'], role);
+            else
+                error('runExperiment:projectorPatternMode', ...
+                    ['The ''%s'' LightCrafter is in %s mode; video-mode experiments ' ...
+                     'need video mode (de-gamma only exists in the video pipeline). ' ...
+                     'Switch it back and retry.'], role, modeTxt);
+            end
+        elseif ~ok
+            warning('runExperiment:monitorProjector', ...
+                ['The non-required ''%s'' LightCrafter did not verify linear ' ...
+                 '(reachable=%d, linear=%d, mode=%s) -- continuing anyway.'], ...
+                role, s.reachable, s.linear, modeTxt);
+        end
+
+        if ok
+            parts{i} = sprintf('%s LINEAR (0x%02X, %s)', role, s.gamma, s.mode);
+        else
+            parts{i} = sprintf('%s NOT VERIFIED', role);
+        end
+    end
+    fprintf('[runExperiment] projector: %s.\n', strjoin(parts, '; '));
 end
 
 

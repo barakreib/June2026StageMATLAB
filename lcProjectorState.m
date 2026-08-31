@@ -1,0 +1,240 @@
+function out = lcProjectorState(action, varargin)
+% lcProjectorState  Cached, per-role LightCrafter 4500 gamma/mode state.
+%
+%   The DLPC350's de-gamma bypass is VOLATILE (any power cycle or the TI
+%   Control Software silently restores it), so the suite must know, per run,
+%   whether each projector is actually linear. This module owns that
+%   knowledge: a per-MATLAB-process cache keyed by role, populated only by
+%   explicit calls -- nothing here runs from a timer or a render callback.
+%
+%   Roles are short names matching rig_config.json's `lc_projectors` keys.
+%   The rig uses two: 'stim' (microscope light path -- the projector Stage
+%   renders to, and the one lcGammaCorrect's regime follows) and 'monitor'
+%   (stimulus monitoring / light-detector driving).
+%
+%   s = lcProjectorState('get', role)      cached state; NEVER touches
+%                                          hardware; unknown role -> default
+%                                          struct with known=false
+%   s = lcProjectorState('refresh', role)  read-only hardware query
+%                                          (ensure_linear.py --query)
+%   s = lcProjectorState('ensure', role)   apply the de-gamma bypass if
+%                                          needed + verify (writes!)
+%   s = lcProjectorState('assume', role, s)  inject state without hardware
+%                                          (tests, manual override); missing
+%                                          fields take defaults
+%       lcProjectorState('clear')          wipe every role
+%       lcProjectorState('clear', role)    wipe one role
+%   r = lcProjectorState('regime')         'linear' | 'degamma' -- pure
+%                                          cache lookup on the STIM role,
+%                                          safe to call per frame
+%
+%   State struct fields:
+%       role       'stim' | 'monitor' | ...
+%       known      logical  any refresh/ensure/assume populated this role
+%       reachable  logical  last hardware contact succeeded
+%       linear     logical  register bit7 clear AND main-status bit agree
+%       gamma      double   gamma register value (NaN when unknown)
+%       mode       'video' | 'pattern' | ''
+%       changed    logical  last 'ensure' had to apply the bypass
+%       checkedAt  datetime of last hardware contact (NaT for assume/none)
+%       source     'ensure' | 'query' | 'assume' | 'none'
+%
+%   'regime' maps known && reachable && linear && mode=='video' to 'linear'
+%   and EVERYTHING else to 'degamma' -- so with no configuration, no
+%   hardware, or any doubt, lcGammaCorrect keeps applying the measured LUT
+%   exactly as before this module existed.
+%
+%   'refresh'/'ensure' need the role configured in rig_config.json:
+%       "lc_projectors": {
+%         "stim":    {"device": "<hid-path-substring>", "required_for_run": true,
+%                     "transport": "local"},
+%         "monitor": {"device": "...", "required_for_run": false}
+%       }
+%   plus optionally "lc_toolkit_root" (default: <repo>/lcr4500-linearize).
+%   `device` is an index, exact serial, or HID-path substring (run
+%   `ensure_linear.py --list` on the rig; pin by path, label the ports).
+%   `transport` 'local' shells out on this machine; 'stage-agent' is the
+%   reserved seam for a projector attached to the remote Stage box and is
+%   not implemented yet.
+%
+%   Unreachable/not-linear outcomes are RECORDED in the struct, not thrown
+%   -- the caller (runExperiment's bracket) decides what refuses a run.
+%   Only toolkit breakage (missing script, bad usage) throws.
+%
+%   Errors: lcProjectorState:badAction, :badRole, :notConfigured,
+%           :transportUnsupported
+
+persistent cache
+if isempty(cache), cache = struct(); end
+
+switch lower(char(action))
+    case 'get'
+        role = local_role(varargin);
+        out = local_get(cache, role);
+
+    case 'refresh'
+        role = local_role(varargin);
+        s = local_transport(local_deviceConfig(role), 'query');
+        s.role = role;
+        cache.(role) = s;
+        out = s;
+
+    case 'ensure'
+        role = local_role(varargin);
+        s = local_transport(local_deviceConfig(role), 'ensure');
+        s.role = role;
+        cache.(role) = s;
+        out = s;
+
+    case 'assume'
+        role = local_role(varargin);
+        if numel(varargin) < 2 || ~isstruct(varargin{2})
+            error('lcProjectorState:badAction', ...
+                '''assume'' needs a role and a state struct.');
+        end
+        s = local_default(role);
+        given = varargin{2};
+        for f = fieldnames(given)'
+            s.(f{1}) = given.(f{1});
+        end
+        s.role = role;
+        s.known = true;
+        s.source = 'assume';
+        cache.(role) = s;
+        out = s;
+
+    case 'clear'
+        if isempty(varargin)
+            cache = struct();
+        else
+            role = local_role(varargin);
+            if isfield(cache, role)
+                cache = rmfield(cache, role);
+            end
+        end
+        out = [];
+
+    case 'regime'
+        s = local_get(cache, 'stim');
+        if s.known && s.reachable && s.linear && strcmp(s.mode, 'video')
+            out = 'linear';
+        else
+            out = 'degamma';
+        end
+
+    otherwise
+        error('lcProjectorState:badAction', ...
+            'Unknown action ''%s''. See help lcProjectorState.', char(action));
+end
+end
+
+% ------------------------------------------------------------------------
+function role = local_role(args)
+if isempty(args) || ~(ischar(args{1}) || isstring(args{1})) || ...
+        ~isvarname(char(args{1}))
+    error('lcProjectorState:badRole', ...
+        'Role must be a simple name like ''stim'' or ''monitor''.');
+end
+role = char(args{1});
+end
+
+function s = local_default(role)
+s = struct('role', role, 'known', false, 'reachable', false, ...
+    'linear', false, 'gamma', NaN, 'mode', '', 'changed', false, ...
+    'checkedAt', NaT, 'source', 'none');
+end
+
+function s = local_get(cache, role)
+if isfield(cache, role)
+    s = cache.(role);
+else
+    s = local_default(role);
+end
+end
+
+function devCfg = local_deviceConfig(role)
+cfgAll = loadRigConfig('lc_projectors', []);
+if ~isstruct(cfgAll) || ~isfield(cfgAll, role)
+    error('lcProjectorState:notConfigured', ...
+        ['rig_config.json has no lc_projectors.%s entry -- hardware ' ...
+         'queries are disabled on this machine. Configure the projector ' ...
+         'on the rig (see help lcProjectorState), or use ' ...
+         '''assume''/''get'' here.'], role);
+end
+devCfg = cfgAll.(role);
+end
+
+function s = local_transport(devCfg, mode)
+% The ONLY place this module touches hardware. 'local' shells out via the
+% toolkit's MATLAB wrapper; 'stage-agent' (a projector on the remote Stage
+% machine) is a reserved seam, same contract over TCP, not built yet.
+transport = 'local';
+if isfield(devCfg, 'transport') && ~isempty(devCfg.transport)
+    transport = char(devCfg.transport);
+end
+
+switch transport
+    case 'local'
+        s = local_transportLocal(devCfg, mode);
+    otherwise
+        error('lcProjectorState:transportUnsupported', ...
+            ['transport ''%s'' is not implemented yet (only ''local''). ' ...
+             'The stage-agent transport is the planned path for a ' ...
+             'projector attached to the Stage render machine.'], transport);
+end
+end
+
+function s = local_transportLocal(devCfg, mode)
+root = char(string(loadRigConfig('lc_toolkit_root', '')));
+here = fileparts(mfilename('fullpath'));
+if isempty(root)
+    root = fullfile(here, 'lcr4500-linearize');
+elseif ~ismember(':', root) && root(1) ~= '/' && root(1) ~= '\'
+    root = fullfile(here, root);    % relative paths hang off the repo
+end
+if exist('ensureLightCrafterLinear', 'file') ~= 2
+    addpath(fullfile(root, 'matlab'));
+end
+
+device = '';
+if isfield(devCfg, 'device'), device = char(string(devCfg.device)); end
+
+s = local_default('');
+s.checkedAt = datetime('now');
+
+if strcmp(mode, 'query')
+    r = ensureLightCrafterLinear('query', true, 'device', device, 'root', root);
+    s.known = true;
+    s.reachable = r.reachable;
+    s.linear = r.reachable && r.linear;
+    s.gamma = r.gamma;
+    s.mode = r.mode;
+    s.source = 'query';
+    return;
+end
+
+% ensure: the wrapper throws on unreachable/not-linear -- convert those two
+% outcomes into recorded state; anything else is toolkit breakage.
+s.source = 'ensure';
+try
+    r = ensureLightCrafterLinear('device', device, 'root', root);
+    s.known = true;
+    s.reachable = true;
+    s.linear = r.linear;
+    s.gamma = r.gamma;
+    s.mode = r.mode;
+    s.changed = r.changed;
+catch err
+    switch err.identifier
+        case 'LCr4500:unreachable'
+            s.known = true;
+            s.reachable = false;
+        case 'LCr4500:notLinear'
+            s.known = true;
+            s.reachable = true;
+            s.linear = false;
+        otherwise
+            rethrow(err);
+    end
+end
+end

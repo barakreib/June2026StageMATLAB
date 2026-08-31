@@ -4,6 +4,7 @@ function tree = finalizeStimBlock(outDir, action, varargin)
 %   tree = finalizeStimBlock(outDir, 'append', suffix)
 %   tree = finalizeStimBlock(outDir, 'discard')          the last block
 %   tree = finalizeStimBlock(outDir, 'discard', nBlocks) the last nBlocks (one whole run)
+%   tree = finalizeStimBlock(outDir, 'warn', entry)      flag a data-quality problem
 %
 %   The stimulusGUI "stimulus protocol complete" dialog calls this ONCE, when the whole
 %   protocol has finished:
@@ -22,6 +23,12 @@ function tree = finalizeStimBlock(outDir, action, varargin)
 %       Analysis Suite reads (neitz.io.stim.build_import_plan): any .abf whose acquisition
 %       time matches a discarded epoch's `timestamp` is skipped on import instead of surfacing
 %       as an unsorted recording. If the cell is left with no blocks, the cell node is dropped.
+%
+%   'warn', entry : append `entry` (a struct; a .type field names the problem, e.g.
+%       'projector_gamma_reverted' -> runExperiment's end-of-run projector check) to a
+%       top-level `data_quality_warnings[]` array, stamped with a timestamp and the current
+%       cell's name. Additive, like `discarded[]`: the Analysis Suite ignores it until
+%       taught otherwise, but the flag lives WITH the data it questions.
 %
 %   Operates ONLY on <outDir>/YYYY_MM_DD_stim_manifest.json (today's), written back atomically.
 %   NEVER touches the Clampex .abf files (Clampex owns those; "discard" only edits the manifest
@@ -93,9 +100,19 @@ function tree = finalizeStimBlock(outDir, action, varargin)
                 end
             end
 
+        case 'warn'
+            entry = struct();
+            if ~isempty(varargin) && isstruct(varargin{1}), entry = varargin{1}; end
+            if ~isfield(entry, 'type'), entry.type = 'unspecified'; end
+            entry.timestamp = char(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss'));
+            entry.cell_name = local_getfield(cells{end}, 'cell_name', '');
+            warns = local_asCellArray(local_getfield(tree, 'data_quality_warnings', {}));
+            warns{end + 1} = entry;
+            tree.data_quality_warnings = warns;
+
         otherwise
             error('finalizeStimBlock:badAction', ...
-                  'action must be ''append'' or ''discard'' (got ''%s'').', char(action));
+                  'action must be ''append'', ''discard'' or ''warn'' (got ''%s'').', char(action));
     end
 
     tree.cells = cells;
