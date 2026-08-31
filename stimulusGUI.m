@@ -300,8 +300,8 @@ function stimulusGUI(mode)
         % Session-wide switches and addresses, bottom right (same width as the monitor):
         % Stage host, the Clampex / LED-driver enables, and the LED driver's mode + port.
         sp = uipanel(parent, 'Title', 'Settings');
-        sg = uigridlayout(sp, [5 2]);
-        sg.RowHeight   = {30, 26, 26, 30, 30};
+        sg = uigridlayout(sp, [6 2]);
+        sg.RowHeight   = {30, 26, 26, 30, 30, 30};
         sg.ColumnWidth = {150, '1x'};
         sg.Padding     = [8 6 8 6];
         sg.RowSpacing  = 6;
@@ -327,6 +327,68 @@ function stimulusGUI(mode)
         h.ledPort = uieditfield(sg, 'text', 'Value', char(loadRigConfig('led_port', 'COM3')), ...
             'Tooltip', ['LED-driver port (default: rig_config led_port -- hard-coded is fastest). ' ...
                         'Type AUTO to probe for the FPGA instead (slower), or a /dev/cu.* node on macOS.']);
+        % Projector gamma state: updated by every run's bracket, and on demand here.
+        % The button is a READ-ONLY query (never writes the register); with a
+        % stage-agent transport it goes over the network to lcr_agent on the
+        % projector machine.
+        h.projCheckBtn = uibutton(sg, 'Text', 'Check projector', ...
+            'ButtonPushedFcn', @(s, e) onCheckProjector(), ...
+            'Tooltip', ['Read-only query of the stim LightCrafter''s de-gamma state ' ...
+                        '(rig_config lc_projectors picks the device and transport). ' ...
+                        'Run does this automatically -- and forces linear -- at every start.']);
+        h.projStatus = uilabel(sg, 'Text', 'not checked', 'FontAngle', 'italic', ...
+            'FontColor', [0.45 0.45 0.45], ...
+            'Tooltip', ['LINEAR = de-gamma bypassed and verified; DE-GAMMA ON = the ' ...
+                        'projector reverted (power cycle / TI GUI) and stimuli go through ' ...
+                        'the measured LUT instead. The register is volatile: it resets on ' ...
+                        'every projector power cycle.']);
+    end
+
+    function onCheckProjector()
+        % Read-only refresh of the stim projector state (1-2 s; longer over the
+        % network). Never writes; Run's bracket is what forces linear.
+        h.projCheckBtn.Enable = 'off';
+        h.projStatus.Text      = 'checking...';
+        h.projStatus.FontColor = [0.45 0.45 0.45];
+        drawnow;
+        restoreBtn = onCleanup(@() set(h.projCheckBtn, 'Enable', 'on')); %#ok<NASGU>
+        try
+            lcProjectorState('refresh', 'stim');
+        catch err
+            if strcmp(err.identifier, 'lcProjectorState:notConfigured')
+                h.projStatus.Text = 'not configured (rig_config lc_projectors)';
+                h.projStatus.FontColor = [0.45 0.45 0.45];
+            else
+                msg = err.message;
+                if numel(msg) > 70, msg = [msg(1:70) '...']; end
+                h.projStatus.Text = ['check failed: ' msg];
+                h.projStatus.FontColor = [0.80 0 0];
+            end
+            return;
+        end
+        updateProjectorLabel();
+    end
+
+    function updateProjectorLabel()
+        % Render the CACHED stim-projector verdict (a pure lookup, no hardware).
+        s = lcProjectorState('get', 'stim');
+        if ~s.known
+            txt = 'not checked';                                  col = [0.45 0.45 0.45];
+        elseif ~s.reachable
+            txt = 'UNREACHABLE';                                  col = [0.80 0 0];
+        elseif s.linear && strcmp(s.mode, 'video')
+            txt = sprintf('LINEAR (0x%02X, video)', s.gamma);     col = [0 0.55 0];
+        elseif ~strcmp(s.mode, 'video')
+            m = upper(s.mode); if isempty(m), m = 'UNKNOWN'; end
+            txt = sprintf('%s MODE (gamma n/a)', m);              col = [0.85 0.45 0.10];
+        else
+            txt = sprintf('DE-GAMMA ON (0x%02X)', s.gamma);       col = [0.80 0 0];
+        end
+        if ~isnat(s.checkedAt)
+            txt = sprintf('%s  @ %s', txt, char(datetime(s.checkedAt, 'Format', 'HH:mm:ss')));
+        end
+        h.projStatus.Text      = txt;
+        h.projStatus.FontColor = col;
     end
 
     function buildPhaseBand(parent)
@@ -1274,6 +1336,9 @@ function stimulusGUI(mode)
             figure(h.fig);
             uialert(h.fig, err.message, 'runExperiment error');
         end
+        % The run's projector bracket (or its refusal) just updated the cached
+        % state -- reflect it in the Settings readout either way.
+        updateProjectorLabel();
     end
 
     function tf = isCancelledNow()

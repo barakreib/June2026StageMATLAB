@@ -206,13 +206,25 @@ re-queries the stim projector and a mid-run revert warns loudly + flags the mani
 (`data_quality_warnings`). `lcGammaCorrect` follows automatically: verified linear → raw
 values; anything else → the measured LUT, exactly as before. No config key = bracket inert.
 
-1. ☐ **Identify the two units**: with both LC4500s plugged in,
-   `.venv\Scripts\python.exe ensure_linear.py --list` → two `DEV` lines. Unplug/replug one
-   to see which path is which. **Label the USB ports** (STIM / MON) — the HID path is
-   stable per physical port, not per unit.
-2. ☐ Pin them in rig_config.json (then `clear loadRigConfig`):
-   `"lc_projectors": {"stim": {"device": "<path-substring>", "required_for_run": true},
-   "monitor": {"device": "<path-substring>", "required_for_run": false}}`
+0. ☐ **Which machine has the USB?** The stim LC4500 is currently plugged into the
+   **stage.server box**, not the client. Either move the cable (then `transport` stays
+   `local`), or use the network path: on the stage.server box update
+   `D:\share\lcr4500-linearize` (the deployed copy), run `setup.bat` there if `.venv` is
+   missing, allow inbound TCP **5676** in its firewall, and start `13-start-agent.bat`
+   (at logon via Task Scheduler — same idiom as the Stage wake listener on 5677; see the
+   toolkit README). Then the rig_config entry below gets
+   `"transport": "stage-agent"` (+ optional `"host"`, default = `stage_host`).
+1. ☐ **Identify the two units**: ON THE MACHINE WITH THE USB,
+   `.venv\Scripts\python.exe ensure_linear.py --list` (or `12-list-devices.bat`) → one
+   `DEV` line per unit. Unplug/replug one to see which path is which. **Label the USB
+   ports** (STIM / MON) — the HID path is stable per physical port, not per unit.
+2. ☐ Pin them in rig_config.json (then `clear loadRigConfig`), e.g. with the stim unit
+   on the stage.server box and the monitor unit local:
+   `"lc_projectors": {"stim": {"device": "<path-substring>", "required_for_run": true,
+   "transport": "stage-agent"}, "monitor": {"device": "<path-substring>",
+   "required_for_run": false}}`
+   Sanity-check the agent from the client first: `Check projector` in the GUI's Settings
+   panel (read-only), or from MATLAB `lcProjectorState('refresh','stim')`.
 3. ☐ GUI Run: expect the monitor's `projector` phase line, then
    `[runExperiment] projector: stim LINEAR (0x00, video); monitor LINEAR ...` before the
    LED setup. Manifest block gains `projector_linearity.state = "linear"`.

@@ -19,6 +19,9 @@ function out = lcProjectorState(action, varargin)
 %                                          (ensure_linear.py --query)
 %   s = lcProjectorState('ensure', role)   apply the de-gamma bypass if
 %                                          needed + verify (writes!)
+%   ...('refresh'|'ensure', role, devCfg)  same, with the device config
+%                                          given directly instead of read
+%                                          from rig_config (a test seam)
 %   s = lcProjectorState('assume', role, s)  inject state without hardware
 %                                          (tests, manual override); missing
 %                                          fields take defaults
@@ -53,9 +56,11 @@ function out = lcProjectorState(action, varargin)
 %   plus optionally "lc_toolkit_root" (default: <repo>/lcr4500-linearize).
 %   `device` is an index, exact serial, or HID-path substring (run
 %   `ensure_linear.py --list` on the rig; pin by path, label the ports).
-%   `transport` 'local' shells out on this machine; 'stage-agent' is the
-%   reserved seam for a projector attached to the remote Stage box and is
-%   not implemented yet.
+%   `transport` 'local' shells out on this machine. 'stage-agent' reaches
+%   a projector whose USB is on ANOTHER machine (the Stage-server box)
+%   through lcr_agent.py listening there -- optional `host` (default:
+%   rig_config stage_host) and `port` (default 5676; the wake listener is
+%   5677 and Stage itself 5678 -- this never touches those).
 %
 %   Unreachable/not-linear outcomes are RECORDED in the struct, not thrown
 %   -- the caller (runExperiment's bracket) decides what refuses a run.
@@ -74,14 +79,14 @@ switch lower(char(action))
 
     case 'refresh'
         role = local_role(varargin);
-        s = local_transport(local_deviceConfig(role), 'query');
+        s = local_transport(local_deviceConfig(role, varargin), 'query');
         s.role = role;
         cache.(role) = s;
         out = s;
 
     case 'ensure'
         role = local_role(varargin);
-        s = local_transport(local_deviceConfig(role), 'ensure');
+        s = local_transport(local_deviceConfig(role, varargin), 'ensure');
         s.role = role;
         cache.(role) = s;
         out = s;
@@ -152,7 +157,13 @@ else
 end
 end
 
-function devCfg = local_deviceConfig(role)
+function devCfg = local_deviceConfig(role, args)
+% args is the action's varargin: an optional struct after the role overrides
+% rig_config entirely (test seam / one-off manual calls).
+if numel(args) >= 2 && isstruct(args{2})
+    devCfg = args{2};
+    return;
+end
 cfgAll = loadRigConfig('lc_projectors', []);
 if ~isstruct(cfgAll) || ~isfield(cfgAll, role)
     error('lcProjectorState:notConfigured', ...
@@ -176,15 +187,17 @@ end
 switch transport
     case 'local'
         s = local_transportLocal(devCfg, mode);
+    case 'stage-agent'
+        s = local_transportAgent(devCfg, mode);
     otherwise
         error('lcProjectorState:transportUnsupported', ...
-            ['transport ''%s'' is not implemented yet (only ''local''). ' ...
-             'The stage-agent transport is the planned path for a ' ...
-             'projector attached to the Stage render machine.'], transport);
+            ['transport ''%s'' is not implemented (use ''local'' or ' ...
+             '''stage-agent'').'], transport);
 end
 end
 
-function s = local_transportLocal(devCfg, mode)
+function root = local_toolkitRoot()
+% The toolkit folder; both transports need its matlab/ (parseLcrLine) on path.
 root = char(string(loadRigConfig('lc_toolkit_root', '')));
 here = fileparts(mfilename('fullpath'));
 if isempty(root)
@@ -192,9 +205,13 @@ if isempty(root)
 elseif ~ismember(':', root) && root(1) ~= '/' && root(1) ~= '\'
     root = fullfile(here, root);    % relative paths hang off the repo
 end
-if exist('ensureLightCrafterLinear', 'file') ~= 2
+if exist('parseLcrLine', 'file') ~= 2 || exist('ensureLightCrafterLinear', 'file') ~= 2
     addpath(fullfile(root, 'matlab'));
 end
+end
+
+function s = local_transportLocal(devCfg, mode)
+root = local_toolkitRoot();
 
 device = '';
 if isfield(devCfg, 'device'), device = char(string(devCfg.device)); end
@@ -236,5 +253,85 @@ catch err
         otherwise
             rethrow(err);
     end
+end
+end
+
+function s = local_transportAgent(devCfg, mode)
+% Reach a projector whose USB is on ANOTHER machine, through lcr_agent.py
+% listening there (lcr4500-linearize/lcr_agent.py; 13-start-agent.bat).
+% Protocol: one request line -> ensure_linear.py's output + a final
+% 'EXIT=<n>' line. Exit codes mirror the local path: 0 linear, 1 not
+% linear, 2 unreachable. No reply / refused connection is recorded as
+% unreachable (the bracket then refuses the run for a required role);
+% EXIT=3 or a garbled reply is toolkit breakage and throws.
+local_toolkitRoot();                        % parseLcrLine on the path
+
+host = '';
+if isfield(devCfg, 'host') && ~isempty(devCfg.host), host = char(string(devCfg.host)); end
+if isempty(host), host = char(string(loadRigConfig('stage_host', 'localhost'))); end
+if isempty(host), host = 'localhost'; end
+port = 5676;
+if isfield(devCfg, 'port') && ~isempty(devCfg.port), port = double(devCfg.port); end
+timeoutS = 30;
+if isfield(devCfg, 'timeout') && ~isempty(devCfg.timeout), timeoutS = double(devCfg.timeout); end
+
+if strcmp(mode, 'query'), req = 'query'; else, req = 'ensure'; end
+if isfield(devCfg, 'device') && ~isempty(devCfg.device)
+    req = sprintf('%s --device %s', req, char(string(devCfg.device)));
+end
+
+s = local_default('');
+s.checkedAt = datetime('now');
+s.source = mode;                            % 'ensure' | 'query'
+
+buf = '';
+exitCode = [];
+try
+    t = tcpclient(host, port, 'ConnectTimeout', 5, 'Timeout', 5);
+    cleanupT = onCleanup(@() delete(t)); %#ok<NASGU>
+    writeline(t, req);
+    t0 = tic;
+    while toc(t0) < timeoutS
+        n = t.NumBytesAvailable;
+        if n > 0
+            buf = [buf reshape(char(read(t, n, 'char')), 1, [])]; %#ok<AGROW>
+            tok = regexp(buf, 'EXIT=(\d+)', 'tokens', 'once');
+            if ~isempty(tok)
+                exitCode = str2double(tok{1});
+                break;
+            end
+        else
+            pause(0.05);
+        end
+    end
+catch
+    % refused / host down / bad address -> recorded as unreachable below
+end
+
+if isempty(exitCode)
+    s.known = true;
+    s.reachable = false;
+    fprintf(2, ['[lcProjectorState] no reply from lcr_agent at %s:%d -- start ' ...
+                '13-start-agent.bat on the projector machine (and allow inbound ' ...
+                'TCP %d in its firewall once).\n'], host, port, port);
+    return;
+end
+
+switch exitCode
+    case {0, 1}
+        r = parseLcrLine(buf);
+        s.known = true;
+        s.reachable = true;
+        s.linear = r.linear;
+        s.gamma = r.gamma;
+        s.mode = r.mode;
+        s.changed = r.changed;
+    case 2
+        s.known = true;
+        s.reachable = false;
+    otherwise
+        error('lcProjectorState:agent', ...
+            'lcr_agent at %s:%d rejected the request (EXIT=%d):\n%s', ...
+            host, port, exitCode, strtrim(buf));
 end
 end
