@@ -30,12 +30,16 @@ function outPath = writeStimValuesCsv(outDir, stimName, seed, intendedByChannel,
 %
 % Called by the AASeededGaussian* stimuli when rig_config.json has
 % "debug_values_csv": true (loadRigConfig caches -- run `clear loadRigConfig`
-% after flipping the flag). One timestamped file per trial, written next to the
-% day's stim manifest. TROUBLESHOOTING ONLY: for analysis the values regenerate
-% from the seed; leave the flag false in real experiments (a long checkerboard
-% run makes millions of rows).
+% after flipping the flag). One timestamped file per trial, written into a
+% `debug` SUBDIRECTORY of outDir (created on demand), so a troubleshooting
+% session never litters the directory holding the day's stim manifest.
+% TROUBLESHOOTING ONLY: for analysis the values regenerate from the seed;
+% leave the flag false in real experiments (a long checkerboard run makes
+% millions of rows).
 
     if nargin < 1 || isempty(outDir), outDir = pwd; end
+    outDir = fullfile(outDir, 'debug');
+    if ~exist(outDir, 'dir'), mkdir(outDir); end
     if nargin < 5, ledGrid = []; end
     ledGrid = local_grid(ledGrid);
     ledNote = '';

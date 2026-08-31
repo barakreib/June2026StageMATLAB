@@ -32,6 +32,8 @@ function test_values_csv()
         'header carries the 4x3 stimulus LED grid');
     [~, base] = fileparts(p);
     assert(contains(base, 'stimA_seed7_values'), 'file name embeds stimulus + seed');
+    [~, sub] = fileparts(fileparts(p));
+    assert(strcmp(sub, 'debug'), 'dumps land in a debug/ subdirectory of outDir');
 
     T = readtable(p, 'CommentStyle', '#');
     assert(height(T) == cy * cx * nu, 'one row per (update, check)');
