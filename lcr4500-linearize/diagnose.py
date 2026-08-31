@@ -7,15 +7,21 @@ Run this when the image is wrong in a way the gamma setting cannot explain
 -- no colour, wrong colour, nothing at all.
 """
 
+import argparse
 import sys
 
 from lcr4500 import LCr4500, DeviceNotFound, describe_gamma
 
 
 def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--device", metavar="SEL", default=None,
+                    help="select one unit when several are attached: index, "
+                         "exact serial, or HID-path substring")
+    args = ap.parse_args()
     problems = []
     try:
-        with LCr4500() as p:
+        with LCr4500(device=args.device) as p:
             print("LightCrafter 4500 / DLPC350 -- full video path")
             print("=" * 62)
 

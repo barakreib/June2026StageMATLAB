@@ -17,6 +17,15 @@ The CMD3-before-CMD2 ordering is not a typo: TI's own API packs the
 command as (CMD2 << 8) | CMD3 into a little-endian uint16, so CMD3 goes
 out on the wire first. Getting this backwards is the single most common
 reason a hand-rolled DLPC350 packet is silently ignored.
+
+Multiple projectors: LCr4500(device=<selector>) picks one unit when more
+than one is attached. A selector is an index (into the path-sorted list),
+an exact serial number, or a case-insensitive substring of the HID path.
+LC4500 units frequently report empty or identical serial numbers, so the
+HID path is the reliable identity: on Windows it encodes the hub/port
+chain, which is stable across reboots and power cycles FOR A GIVEN
+PHYSICAL USB PORT but changes if the cable moves to a different port.
+Label the ports on the rig machine and pin each unit by path substring.
 """
 
 import time
@@ -81,12 +90,88 @@ class DeviceNotFound(Exception):
     pass
 
 
+class AmbiguousDevice(DeviceNotFound):
+    """A device selector matched more than one attached unit."""
+    pass
+
+
 def enumerate_devices():
     """Every HID interface the OS is exposing for the LightCrafter."""
     try:
         return hid.enumerate(VID, PID)
     except Exception:
         return []
+
+
+def list_devices():
+    """enumerate_devices(), stable-sorted by path -- the order that index
+    selectors and DEV listings refer to."""
+    return sorted(enumerate_devices(), key=_path_str)
+
+
+def _path_str(d):
+    p = d.get("path", b"") or b""
+    if isinstance(p, bytes):
+        return p.decode("utf-8", errors="replace")
+    return str(p)
+
+
+def format_device_line(i, d):
+    serial = d.get("serial_number") or ""
+    return f'DEV index={i} serial="{serial}" path="{_path_str(d)}"'
+
+
+def _device_listing(devices):
+    if not devices:
+        return "  (no LightCrafter HID interfaces enumerated)"
+    return "\n".join("  " + format_device_line(i, d) for i, d in enumerate(devices))
+
+
+def resolve_device(devices, selector):
+    """Pick exactly one device dict out of a hid.enumerate() list.
+
+    selector, tried in order:
+      1. all digits ......... index into the list stable-sorted by path
+                              (hid.enumerate order is not guaranteed)
+      2. exact match ........ on a non-empty serial_number
+      3. substring .......... case-insensitive, against the HID path
+
+    Raises DeviceNotFound on zero matches and AmbiguousDevice on more than
+    one -- never silently picks the first when a selector was given, because
+    LC4500 serials are often empty or identical across units.
+    """
+    devices = sorted(devices, key=_path_str)
+    sel = str(selector).strip()
+    if not devices:
+        raise DeviceNotFound(
+            f"Device selector '{sel}' matched nothing: no LightCrafter HID "
+            f"interfaces are enumerated at all.{TROUBLESHOOT}")
+    if not sel:
+        raise DeviceNotFound(
+            "Empty device selector. Give an index, an exact serial number, "
+            "or a substring of the HID path. Attached now:\n"
+            + _device_listing(devices))
+    if sel.isdigit():
+        i = int(sel)
+        if i >= len(devices):
+            raise DeviceNotFound(
+                f"Device index {i} is out of range -- {len(devices)} "
+                f"device(s) attached:\n" + _device_listing(devices))
+        return devices[i]
+    matches = [d for d in devices if (d.get("serial_number") or "") == sel]
+    if not matches:
+        matches = [d for d in devices if sel.lower() in _path_str(d).lower()]
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        raise AmbiguousDevice(
+            f"Device selector '{sel}' matches {len(matches)} units -- refusing "
+            f"to guess. Pin each unit by a unique HID-path substring "
+            f"(serials on LC4500s are often empty or duplicated):\n"
+            + _device_listing(matches))
+    raise DeviceNotFound(
+        f"Device selector '{sel}' matched no attached unit. Attached now:\n"
+        + _device_listing(devices))
 
 
 TROUBLESHOOT = """
@@ -113,15 +198,27 @@ def build_packet(flags, seq, cmd2, cmd3, data=b""):
 
 
 class LCr4500:
-    def __init__(self):
+    def __init__(self, device=None):
+        """device: None opens the first unit the OS hands over (single-
+        projector behavior, unchanged); otherwise a selector for
+        resolve_device() -- index, exact serial, or path substring."""
         self.dev = None
+        self.device = device
         self._seq = 0
 
     # -- lifecycle ---------------------------------------------------
     def open(self):
+        target_path = None
+        if self.device is not None:
+            # resolve first: raises DeviceNotFound/AmbiguousDevice with a
+            # full listing, which beats a bare open() error.
+            target_path = resolve_device(enumerate_devices(), self.device)["path"]
         self.dev = hid.device()
         try:
-            self.dev.open(VID, PID)
+            if target_path is None:
+                self.dev.open(VID, PID)
+            else:
+                self.dev.open_path(target_path)
         except (OSError, IOError) as exc:
             found = enumerate_devices()
             if found:
@@ -131,8 +228,9 @@ class LCr4500:
             else:
                 detail = ("The OS does not see the device at all. It is "
                           "unplugged, unpowered, or the cable is bad.")
+            which = "" if self.device is None else f" (selector '{self.device}')"
             raise DeviceNotFound(
-                f"Could not open the LightCrafter 4500 ({VID:04X}:{PID:04X}).\n"
+                f"Could not open the LightCrafter 4500 ({VID:04X}:{PID:04X}){which}.\n"
                 f"  {exc}\n"
                 f"  {detail}\n{TROUBLESHOOT}"
             )

@@ -2,29 +2,35 @@
 """
 gamma.py -- turn the DLPC350 de-gamma table on or off.
 
-    python gamma.py read     show the current setting
-    python gamma.py off      disable degamma  -> LINEAR light output
-    python gamma.py on       restore the TI video degamma table
+    python gamma.py read               show the current setting
+    python gamma.py off                disable degamma  -> LINEAR light output
+    python gamma.py on                 restore the TI video degamma table
+    python gamma.py read --device SEL  pick a unit when several are attached
+                                       (index, exact serial, or path substring)
 
 This writes a VOLATILE register (CMD2 0x1A / CMD3 0x0E, bit 7).
 Nothing is written to flash. A power cycle restores the factory
 default (enabled), so re-run "off" after every power-up.
 """
 
+import argparse
 import sys
 
 from lcr4500 import LCr4500, DeviceNotFound, describe_gamma
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in ("read", "off", "on"):
-        print(__doc__)
-        return 2
-
-    action = sys.argv[1]
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("action", choices=("read", "off", "on"))
+    ap.add_argument("--device", metavar="SEL", default=None,
+                    help="select one unit when several are attached: index, "
+                         "exact serial, or HID-path substring")
+    args = ap.parse_args()
+    action = args.action
 
     try:
-        with LCr4500() as p:
+        with LCr4500(device=args.device) as p:
             before = p.get_gamma()
             print(f"before : {describe_gamma(before)}")
 
